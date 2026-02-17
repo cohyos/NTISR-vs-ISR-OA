@@ -81,12 +81,17 @@ def run_single_trial(sensor, car, dt: float, n_steps: int,
 
 def build_sensor(mode: str, cfg: dict, cell_cx: float, cell_cy: float,
                  rng: np.random.Generator):
-    """Factory: build a sensor object from config."""
+    """Factory: build a sensor object from config.
+
+    NOTE — modelling assumption: the platform is treated as stationary
+    (orbiting) above the cell for the simulation duration.  Platform
+    speed and heading currently affect only the display / reporting
+    and do NOT alter slant-range or viewing geometry over time.
+    """
     altitude_ft = cfg['platform']['altitude_ft']
     slant_range_nm = cfg['geometry']['slant_range_nm']
     cell_radius_nm = cfg['cell']['radius_nm']
     pd = cfg['detection']['pd_in_fov']
-    heading_rad = np.radians(cfg['platform']['heading_deg'])
 
     if mode == 'isr':
         return ISRLineScan(
