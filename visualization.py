@@ -42,10 +42,9 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
             f"dt={cfg['simulation']['time_step_s']}s, "
             f"{cfg['simulation']['mc_trials']} trials",
             "",
-            "ISR sensor:",
-            f"  Total FOV: {cfg['isr']['total_fov_deg']}°, "
-            f"IFOV: {cfg['isr']['ifov_deg']}°, "
-            f"Sweep: {cfg['isr']['sweep_period_s']}s",
+            "ISR line scanner:",
+            f"  FOV: {cfg['isr']['fov_deg']}°, "
+            f"Frame rate: {cfg['isr']['frame_rate_hz']} Hz",
             "",
             "NTISR Step-and-Stare:",
             f"  FOV: {cfg['ntisr_step_stare']['fov_deg']}°, "
@@ -62,8 +61,7 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
 
         # Footprint sizes
         fp_lines = ["\nGround Footprint Sizes:"]
-        for label, fov_key in [("ISR total", ('isr', 'total_fov_deg')),
-                                ("ISR IFOV", ('isr', 'ifov_deg')),
+        for label, fov_key in [("ISR frame", ('isr', 'fov_deg')),
                                 ("NTISR S&S", ('ntisr_step_stare', 'fov_deg')),
                                 ("NTISR FMV", ('ntisr_fmv', 'fov_deg'))]:
             fp_nm = ground_footprint_at_cell(

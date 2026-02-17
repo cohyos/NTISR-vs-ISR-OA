@@ -122,14 +122,11 @@ def _edit_cell_target(cfg):
 def _edit_isr(cfg):
     _clear()
     print("=" * 55)
-    print("  ISR Sensor (Back-Scanning Mirror)")
+    print("  ISR Line Scanner (30 Hz raster)")
     print("=" * 55)
     s = cfg['isr']
-    s['total_fov_deg'] = _read_float("Total FOV (deg)", s['total_fov_deg'], lo=0.1)
-    s['ifov_deg'] = _read_float("Instantaneous FOV (deg)", s['ifov_deg'], lo=0.01)
-    s['sweep_period_s'] = _read_float("Sweep period (s)", s['sweep_period_s'], lo=0.1)
-    s['along_track_fov_deg'] = _read_float(
-        "Along-track FOV (deg)", s['along_track_fov_deg'], lo=0.01)
+    s['fov_deg'] = _read_float("Sensor FOV (deg)", s['fov_deg'], lo=0.01)
+    s['frame_rate_hz'] = _read_float("Frame rate (Hz)", s['frame_rate_hz'], lo=1)
 
 
 def _edit_ntisr_ss(cfg):
@@ -275,8 +272,7 @@ def _show_summary(cfg):
     print()
 
     sensors = [
-        ("ISR total FOV", cfg['isr']['total_fov_deg']),
-        ("ISR IFOV", cfg['isr']['ifov_deg']),
+        ("ISR FOV (1 frame)", cfg['isr']['fov_deg']),
         ("NTISR S&S FOV", cfg['ntisr_step_stare']['fov_deg']),
         ("NTISR FMV FOV", cfg['ntisr_fmv']['fov_deg']),
     ]
@@ -359,7 +355,7 @@ def interactive_menu(cfg):
         print("  ─────────────────────────────────────────")
         print("  1.  Platform & Geometry")
         print("  2.  Cell & Target (car)")
-        print("  3.  ISR Sensor (back-scan mirror)")
+        print("  3.  ISR Line Scanner (30 Hz raster)")
         print("  4.  NTISR Step-and-Stare")
         print("  5.  NTISR FMV Search")
         print("  6.  Detection Model")

@@ -5,12 +5,15 @@ Each sensor produces a time-varying footprint on the ground and evaluates
 whether the target falls within the footprint at each time step.
 
 Detection model per sensor type:
-  - ISR: designed for sweep detection — each time the strip passes over the
-    target there is an instantaneous Pd roll (no min dwell required).
+  - ISR line scanner: 1-degree FOV steps through a boustrophedon raster at
+    30 Hz.  The back-scan mirror only stabilises the LOS during each 1/30 s
+    frame — it does NOT sweep across a wider FOV.  Each frame where the target
+    is inside the FOV is an independent detection opportunity.
   - NTISR S&S: target must be in the stare footprint during dwell — cumulative
     Pd grows with dwell time, requires min dwell threshold.
-  - NTISR FMV: operator must have target in FOV long enough to recognize it —
-    uses a recognition dwell threshold, then Pd per timestep.
+  - NTISR FMV: same 1-degree FOV, but the operator slews the LOS manually.
+    Operator must keep the target in FOV long enough for recognition, then
+    Pd accumulates per timestep.
 """
 
 import numpy as np
@@ -73,91 +76,109 @@ class SensorBase:
         }
 
 
-class ISRBackScan(SensorBase):
+class ISRLineScan(SensorBase):
     """
-    ISR sensor with back-scanning mirror.
+    ISR line-scanner with back-scan stabilisation.
 
-    The mirror sweeps the full FOV back and forth continuously.
-    At any instant the sensor sees a narrow strip (IFOV) within the total FOV.
-    Detection model: each time the strip passes over the target, there is a
-    single detection opportunity with Pd = pd_per_sweep. No minimum dwell
-    needed — the system is designed for sweep detection.
+    The sensor has a fixed FOV (typically 1 degree).  It steps through a
+    boustrophedon (row-by-row) raster covering the full cell at the
+    configured frame rate (default 30 Hz).  The back-scan mirror stabilises
+    the LOS during each frame so the image is smear-free, but it does NOT
+    widen the instantaneous field — the sensor sees exactly one FOV-sized
+    patch per frame.
+
+    Detection model: each frame where the target is inside the FOV is an
+    independent detection opportunity with probability ``pd_in_fov``.
+    No minimum dwell is required; even a single 1/30 s frame is enough
+    for a detection roll.
     """
 
     def __init__(self, altitude_ft, slant_range_nm, cell_center_x,
                  cell_center_y, cell_radius_nm, pd_in_fov,
-                 rng, total_fov_deg, ifov_deg, sweep_period_s,
-                 along_track_fov_deg, platform_heading_rad):
+                 rng, fov_deg, frame_rate_hz):
         super().__init__(altitude_ft, slant_range_nm, cell_center_x,
                          cell_center_y, cell_radius_nm, pd_in_fov, rng)
-        self.total_fov_deg = total_fov_deg
-        self.ifov_deg = ifov_deg
-        self.sweep_period_s = sweep_period_s
-        self.along_track_fov_deg = along_track_fov_deg
-        self.platform_heading = platform_heading_rad
+        self.fov_deg = fov_deg
+        self.frame_rate_hz = frame_rate_hz
+        self.frame_period = 1.0 / frame_rate_hz  # seconds per frame
 
-        # Compute ground footprint dimensions
-        self.total_cross_track_nm = ground_footprint_at_cell(
-            altitude_ft, slant_range_nm, total_fov_deg)
-        self.ifov_cross_track_nm = ground_footprint_at_cell(
-            altitude_ft, slant_range_nm, ifov_deg)
-        self.along_track_nm = ground_footprint_at_cell(
-            altitude_ft, slant_range_nm, along_track_fov_deg)
+        # Ground footprint of one FOV (square)
+        self.fp_size_nm = ground_footprint_at_cell(
+            altitude_ft, slant_range_nm, fov_deg)
+        self.fp_width = self.fp_size_nm
+        self.fp_height = self.fp_size_nm
 
-        # The strip scans across the total FOV width
-        self.scan_half_width = self.total_cross_track_nm / 2.0
+        # Build boustrophedon raster covering full cell
+        self.scan_positions = self._build_raster()
+        self.current_idx = 0
+        self.time_in_frame = 0.0
 
-        # Track whether target was in footprint last step (for edge detection)
-        self._was_in_fp = False
+    def _build_raster(self) -> list:
+        """Build a boustrophedon raster covering the circular cell."""
+        positions = []
+        step = self.fp_size_nm * 0.8  # 20 % overlap between frames
+        if step < 1e-6:
+            step = 0.01
+        r = self.cell_radius
+
+        ny = int(2 * r / step) + 1
+        nx = int(2 * r / step) + 1
+        for iy in range(ny):
+            y = self.cy - r + iy * step
+            row = []
+            for ix in range(nx):
+                x = self.cx - r + ix * step
+                if (x - self.cx) ** 2 + (y - self.cy) ** 2 <= r ** 2:
+                    row.append((x, y))
+            if iy % 2 == 1:
+                row.reverse()
+            positions.extend(row)
+
+        if not positions:
+            positions.append((self.cx, self.cy))
+        return positions
+
+    @property
+    def scan_cycle_time(self) -> float:
+        """Time to complete one full raster of the cell (seconds)."""
+        return len(self.scan_positions) * self.frame_period
 
     def reset(self):
         super().reset()
-        self._was_in_fp = False
+        self.current_idx = 0
+        self.time_in_frame = 0.0
 
     def step(self, t: float, dt: float):
-        """
-        Update mirror position. Mirror sweeps as a triangle wave across
-        the total FOV cross-track extent centered on cell center.
-        """
-        phase = (t % self.sweep_period_s) / self.sweep_period_s
-        if phase < 0.5:
-            offset = -self.scan_half_width + 2 * self.scan_half_width * (phase / 0.5)
-        else:
-            offset = self.scan_half_width - 2 * self.scan_half_width * ((phase - 0.5) / 0.5)
+        """Advance the raster.  Each frame lasts 1/frame_rate_hz seconds."""
+        self.time_in_frame += dt
 
-        # Offset is perpendicular to platform heading
-        perp_angle = self.platform_heading + np.pi / 2
-        self.fp_x = self.cx + offset * np.cos(perp_angle)
-        self.fp_y = self.cy + offset * np.sin(perp_angle)
-        self.fp_width = self.ifov_cross_track_nm
-        self.fp_height = self.along_track_nm
-        self.fp_rotation = self.platform_heading
+        # Advance to next position(s) if frame period elapsed
+        while self.time_in_frame >= self.frame_period:
+            self.time_in_frame -= self.frame_period
+            self.current_idx = (self.current_idx + 1) % len(self.scan_positions)
+
+        pos = self.scan_positions[self.current_idx]
+        self.fp_x = pos[0]
+        self.fp_y = pos[1]
+        self.fp_width = self.fp_size_nm
+        self.fp_height = self.fp_size_nm
+        self.fp_rotation = 0.0
 
     def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
         """
-        ISR detection: each time the sweep strip enters the target position
-        (rising edge), roll a Pd check. Also roll a per-timestep Pd while
-        the strip overlaps the target.
+        Per-frame detection: if the target is inside the FOV during this
+        simulation step, roll a single Pd check.  Because the sensor hops
+        to a new position every 1/30 s, the target is only "seen" in the
+        frames where the raster happens to cover its location.
         """
-        in_fp = self._target_in_footprint(car_x, car_y)
-
-        if in_fp:
-            # Per-timestep detection opportunity while in IFOV
-            # The strip crosses a point in roughly:
-            #   t_cross = (ifov_width / total_width) * (sweep_period / 2)
-            # Pd per crossing should equal pd_in_fov
-            t_cross = (self.ifov_cross_track_nm / max(self.total_cross_track_nm, 0.001)) \
-                      * (self.sweep_period_s / 2.0)
-            if t_cross > 0:
-                p_step = 1.0 - (1.0 - self.pd_in_fov) ** (dt / t_cross)
-            else:
-                p_step = self.pd_in_fov
-            self._was_in_fp = True
-            if self.rng.uniform() < p_step:
+        if self._target_in_footprint(car_x, car_y):
+            if self.rng.uniform() < self.pd_in_fov:
                 return True
-        else:
-            self._was_in_fp = False
         return False
+
+
+# Keep legacy alias so existing imports still work
+ISRBackScan = ISRLineScan
 
 
 class NTISRStepStare(SensorBase):

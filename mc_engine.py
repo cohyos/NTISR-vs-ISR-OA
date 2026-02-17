@@ -10,7 +10,7 @@ Runs N trials for each sensor mode, collecting detection statistics:
 
 import numpy as np
 from car_model import Car
-from sensors import ISRBackScan, NTISRStepStare, NTISRFMV
+from sensors import ISRLineScan, NTISRStepStare, NTISRFMV
 
 
 class MCResult:
@@ -89,14 +89,11 @@ def build_sensor(mode: str, cfg: dict, cell_cx: float, cell_cy: float,
     heading_rad = np.radians(cfg['platform']['heading_deg'])
 
     if mode == 'isr':
-        return ISRBackScan(
+        return ISRLineScan(
             altitude_ft, slant_range_nm, cell_cx, cell_cy,
             cell_radius_nm, pd, rng,
-            total_fov_deg=cfg['isr']['total_fov_deg'],
-            ifov_deg=cfg['isr']['ifov_deg'],
-            sweep_period_s=cfg['isr']['sweep_period_s'],
-            along_track_fov_deg=cfg['isr']['along_track_fov_deg'],
-            platform_heading_rad=heading_rad
+            fov_deg=cfg['isr']['fov_deg'],
+            frame_rate_hz=cfg['isr']['frame_rate_hz']
         )
     elif mode == 'ntisr_ss':
         return NTISRStepStare(

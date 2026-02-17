@@ -18,10 +18,8 @@ car:
   heading_change_interval_s: 15  # Mean interval between random heading changes [s]
 
 isr:
-  total_fov_deg: 6.0          # Total cross-track FOV of the ISR sensor [deg]
-  ifov_deg: 0.3               # Instantaneous FOV (strip width per mirror position) [deg]
-  sweep_period_s: 2.0         # Time for one full back-and-forth mirror sweep [s]
-  along_track_fov_deg: 1.0    # Along-track extent of the IFOV [deg]
+  fov_deg: 1.0                # Sensor FOV [deg] — one square frame per raster position
+  frame_rate_hz: 30            # Frame rate [Hz] — LOS hops to next raster position each frame
 
 ntisr_step_stare:
   fov_deg: 0.5                # FOV of the narrow targeting pod [deg]

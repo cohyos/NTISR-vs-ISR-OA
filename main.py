@@ -64,11 +64,9 @@ def apply_cli_overrides(cfg: dict, args: argparse.Namespace):
     if args.car_speed is not None:
         cfg['car']['speed_kts'] = args.car_speed
     if args.isr_fov is not None:
-        cfg['isr']['total_fov_deg'] = args.isr_fov
-    if args.isr_ifov is not None:
-        cfg['isr']['ifov_deg'] = args.isr_ifov
-    if args.isr_sweep is not None:
-        cfg['isr']['sweep_period_s'] = args.isr_sweep
+        cfg['isr']['fov_deg'] = args.isr_fov
+    if args.isr_frame_rate is not None:
+        cfg['isr']['frame_rate_hz'] = args.isr_frame_rate
     if args.ntisr_ss_fov is not None:
         cfg['ntisr_step_stare']['fov_deg'] = args.ntisr_ss_fov
     if args.ntisr_ss_dwell is not None:
@@ -117,8 +115,7 @@ def print_config_summary(cfg: dict):
 
     # Compute and display ground footprints
     sensors = [
-        ("ISR total FOV", cfg['isr']['total_fov_deg']),
-        ("ISR IFOV (strip)", cfg['isr']['ifov_deg']),
+        ("ISR FOV (1 frame)", cfg['isr']['fov_deg']),
         ("NTISR S&S FOV", cfg['ntisr_step_stare']['fov_deg']),
         ("NTISR FMV FOV", cfg['ntisr_fmv']['fov_deg']),
     ]
@@ -131,9 +128,19 @@ def print_config_summary(cfg: dict):
     cell_area = np.pi * cfg['cell']['radius_nm']**2
     ss_fp = ground_footprint_at_cell(alt, sr, cfg['ntisr_step_stare']['fov_deg'])
     fmv_fp = ground_footprint_at_cell(alt, sr, cfg['ntisr_fmv']['fov_deg'])
-    isr_fp = ground_footprint_at_cell(alt, sr, cfg['isr']['total_fov_deg'])
+    isr_fp = ground_footprint_at_cell(alt, sr, cfg['isr']['fov_deg'])
+
+    # ISR raster: how many frames to cover cell, and scan-cycle time
+    from sensors import ISRLineScan
+    _tmp = ISRLineScan(alt, sr, 0, 0, cfg['cell']['radius_nm'], 0,
+                       np.random.default_rng(0),
+                       cfg['isr']['fov_deg'], cfg['isr']['frame_rate_hz'])
+    n_positions = len(_tmp.scan_positions)
+    cycle_s = _tmp.scan_cycle_time
+
     print(f"  Cell area:     {cell_area:.4f} nm² ({cell_area*NM_TO_FT**2:.0f} ft²)")
-    print(f"  ISR coverage:  {(isr_fp**2/cell_area)*100:.1f}% per sweep position")
+    print(f"  ISR coverage:  {(isr_fp**2/cell_area)*100:.2f}% per frame, "
+          f"{n_positions} positions, {cycle_s:.2f}s/cycle")
     print(f"  S&S coverage:  {(ss_fp**2/cell_area)*100:.2f}% per stare")
     print(f"  FMV coverage:  {(fmv_fp**2/cell_area)*100:.2f}% per frame")
     print()
@@ -173,13 +180,11 @@ Examples:
                      help='Car speed [kts] (default: 30)')
 
     # ISR sensor
-    isr = parser.add_argument_group('ISR Sensor (Back-Scanning Mirror)')
+    isr = parser.add_argument_group('ISR Line Scanner (30 Hz raster)')
     isr.add_argument('--isr-fov', type=float, metavar='DEG',
-                     help='ISR total FOV [deg] (default: 6.0)')
-    isr.add_argument('--isr-ifov', type=float, metavar='DEG',
-                     help='ISR instantaneous FOV [deg] (default: 0.3)')
-    isr.add_argument('--isr-sweep', type=float, metavar='SEC',
-                     help='ISR mirror sweep period [s] (default: 2.0)')
+                     help='ISR sensor FOV [deg] (default: 1.0)')
+    isr.add_argument('--isr-frame-rate', type=float, metavar='HZ',
+                     help='ISR frame rate [Hz] (default: 30)')
 
     # NTISR step-and-stare
     nss = parser.add_argument_group('NTISR Step-and-Stare')
