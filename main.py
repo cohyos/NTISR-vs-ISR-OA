@@ -295,7 +295,7 @@ Examples:
     if cfg['output'].get('animation', True):
         anim_dir = os.path.join(output_dir, 'animation_frames')
         print(f"\nGenerating animation frames...")
-        generate_animation_frames(cfg, anim_dir)
+        generate_animation_frames(cfg, anim_dir, active_modes=selected_modes)
 
     # Print final summary
     print("\n" + "=" * 65)

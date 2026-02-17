@@ -218,12 +218,21 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
     print(f"PDF report saved to: {output_path}")
 
 
-def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
+def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200,
+                               active_modes: list = None):
     """
-    Generate a single-trial animation showing all three sensor modes
+    Generate a single-trial animation showing active sensor modes
     side by side with the car moving in the cell.
 
-    Saves frames as PNG files for later assembly or interactive display.
+    Saves frames as PNG files, then assembles them into a playable MP4 video
+    with a timestamp in the filename.
+
+    Args:
+        cfg: configuration dict
+        output_dir: directory to save frames and video
+        n_frames: number of animation frames to generate
+        active_modes: list of mode keys to animate (e.g. ['isr', 'ntisr_ss']).
+                      If None, defaults to all three modes.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -240,9 +249,22 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
     cell_r = cfg['cell']['radius_nm']
     seed = cfg['simulation'].get('random_seed', 42)
 
-    modes = ['isr', 'ntisr_ss', 'ntisr_fmv']
-    titles = ['ISR (Back-Scan Mirror)', 'NTISR (Step & Stare)', 'NTISR (FMV Search)']
-    colors = {'isr': '#4472C4', 'ntisr_ss': '#ED7D31', 'ntisr_fmv': '#70AD47'}
+    all_titles = {
+        'isr': 'ISR (Back-Scan Mirror)',
+        'ntisr_ss': 'NTISR (Step & Stare)',
+        'ntisr_fmv': 'NTISR (FMV Search)',
+    }
+    all_colors = {'isr': '#4472C4', 'ntisr_ss': '#ED7D31', 'ntisr_fmv': '#70AD47'}
+
+    # Determine active modes
+    if active_modes is None:
+        modes = ['isr', 'ntisr_ss', 'ntisr_fmv']
+    else:
+        modes = [m for m in active_modes if m in all_titles]
+    n_modes = len(modes)
+    if n_modes == 0:
+        print("No active sensor modes — skipping animation.")
+        return
 
     # Create shared car (same trajectory for all modes in animation)
     rng_car = np.random.default_rng(seed)
@@ -257,14 +279,19 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
         car.step(dt)
         car_positions[s] = car.get_position()
 
-    # Create sensors
+    # Create sensors only for active modes
     sensors = {}
     for m in modes:
         rng_s = np.random.default_rng(seed + hash(m) % 10000)
         sensors[m] = build_sensor(m, cfg, cell_cx, cell_cy, rng_s)
 
+    # Adaptive figure sizing: 6 inches per panel
+    fig_width = max(6, 6 * n_modes)
+    fig_height = 6
+
     # Generate frames
-    print(f"Generating {n_frames} animation frames...")
+    print(f"Generating {n_frames} animation frames for {n_modes} sensor(s)...")
+    frame_paths = []
     for frame_i in range(n_frames):
         step_start = frame_i * steps_per_frame
         step_end = min(step_start + steps_per_frame, total_steps)
@@ -278,11 +305,12 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
             for m in modes:
                 sensors[m].step(s_idx * dt, dt)
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        fig, axes = plt.subplots(1, n_modes, figsize=(fig_width, fig_height),
+                                 squeeze=False)
         car_x, car_y = car_positions[min(step_end - 1, total_steps - 1)]
 
         for idx, m in enumerate(modes):
-            ax = axes[idx]
+            ax = axes[0, idx]
             # Cell boundary
             circle = plt.Circle((cell_cx, cell_cy), cell_r,
                                 fill=False, color='gray', linewidth=2)
@@ -295,8 +323,8 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
                     (fp['x'] - fp['w']/2, fp['y'] - fp['h']/2),
                     fp['w'], fp['h'],
                     angle=np.degrees(fp['rot']),
-                    linewidth=2, edgecolor=colors[m],
-                    facecolor=colors[m], alpha=0.3
+                    linewidth=2, edgecolor=all_colors[m],
+                    facecolor=all_colors[m], alpha=0.3
                 )
                 ax.add_patch(rect)
 
@@ -320,17 +348,65 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200):
             ax.set_xlim(-cell_r * 1.2, cell_r * 1.2)
             ax.set_ylim(-cell_r * 1.2, cell_r * 1.2)
             ax.set_aspect('equal')
-            ax.set_title(f"{titles[idx]}\nt = {t:.1f}s", fontsize=11)
+            ax.set_title(f"{all_titles[m]}\nt = {t:.1f}s", fontsize=11)
             ax.grid(True, alpha=0.2)
 
         fig.suptitle('NTISR vs ISR — Sensor Scan Comparison',
                      fontsize=14, fontweight='bold')
         fig.tight_layout()
-        fig.savefig(os.path.join(output_dir, f"frame_{frame_i:04d}.png"),
-                    dpi=100, bbox_inches='tight')
+        frame_path = os.path.join(output_dir, f"frame_{frame_i:04d}.png")
+        fig.savefig(frame_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
+        frame_paths.append(frame_path)
 
         if (frame_i + 1) % 50 == 0:
             print(f"  Frame {frame_i + 1}/{n_frames}")
 
     print(f"Animation frames saved to: {output_dir}")
+
+    # Assemble frames into a playable MP4 video
+    if frame_paths:
+        _assemble_video(frame_paths, output_dir, fps=20)
+
+
+def _assemble_video(frame_paths: list, output_dir: str, fps: int = 20):
+    """
+    Assemble PNG frames into a playable MP4 video with a timestamp in the
+    filename. Saves the video in the parent of the frames directory (i.e. the
+    main output directory).
+    """
+    import datetime
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Place the video in the parent output dir (e.g. results/), not inside
+    # the frames subdirectory
+    video_dir = os.path.dirname(output_dir) or output_dir
+    video_path = os.path.join(video_dir, f"sensor_animation_{timestamp}.mp4")
+
+    print(f"Assembling {len(frame_paths)} frames into video at {fps} fps...")
+    try:
+        import imageio
+
+        def _pad_even(img):
+            """Pad image to even width and height (required by libx264)."""
+            h, w = img.shape[:2]
+            new_h = h if h % 2 == 0 else h + 1
+            new_w = w if w % 2 == 0 else w + 1
+            if new_h != h or new_w != w:
+                padded = np.full((*((new_h, new_w) + img.shape[2:]),),
+                                 255, dtype=img.dtype)
+                padded[:h, :w] = img
+                return padded
+            return img
+
+        writer = imageio.get_writer(video_path, fps=fps,
+                                    codec='libx264',
+                                    quality=8,
+                                    macro_block_size=1)
+        for p in frame_paths:
+            writer.append_data(_pad_even(imageio.imread(p)))
+        writer.close()
+        print(f"Video saved to: {video_path}")
+    except Exception as e:
+        print(f"Warning: Could not create video — {e}")
+        print("  Frames are still available as individual PNGs.")
