@@ -212,7 +212,8 @@ class NTISRStepStare(SensorBase):
 
         # Build boustrophedon grid of stare positions covering the cell
         self.stare_positions = self._build_raster()
-        self.current_idx = 0
+        # Randomize start position so we don't always begin at the cell edge
+        self.current_idx = int(rng.integers(0, len(self.stare_positions)))
         self.time_at_position = 0.0
         self.slewing = False
         self.slew_time_remaining = 0.0

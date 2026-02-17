@@ -225,19 +225,19 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
     print(f"PDF report saved to: {output_path}")
 
 
-def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200,
+def generate_animation_frames(cfg: dict, output_dir: str,
                                active_modes: list = None):
     """
     Generate a single-trial animation showing active sensor modes
     side by side with the car moving in the cell.
 
     Saves frames as PNG files, then assembles them into a playable MP4 video
-    with a timestamp in the filename.
+    with a timestamp in the filename.  Frame count scales automatically with
+    simulation duration (~2 frames per second of simulated time, capped at 600).
 
     Args:
         cfg: configuration dict
         output_dir: directory to save frames and video
-        n_frames: number of animation frames to generate
         active_modes: list of mode keys to animate (e.g. ['isr', 'ntisr_ss']).
                       If None, defaults to all three modes.
     """
@@ -249,6 +249,10 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200,
     dt = cfg['simulation']['time_step_s']
     duration = cfg['simulation']['duration_s']
     speed_factor = cfg['output'].get('animation_speed', 5.0)
+
+    # Scale frame count with duration: ~2 frames per simulated second, capped
+    n_frames = min(600, max(20, int(duration * 2)))
+
     frame_dt = duration / n_frames
     steps_per_frame = max(1, int(frame_dt / dt))
 
