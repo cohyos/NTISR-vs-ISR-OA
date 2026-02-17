@@ -24,6 +24,7 @@ import numpy as np
 
 from mc_engine import run_mc
 from visualization import generate_pdf_report, generate_animation_frames
+from interactive_menu import interactive_menu
 
 
 def load_config(config_path: str = None) -> dict:
@@ -224,12 +225,24 @@ Examples:
                      help='Skip animation frame generation')
     out.add_argument('--no-pdf', action='store_true',
                      help='Skip PDF report generation')
+    out.add_argument('--interactive', '-i', action='store_true',
+                     help='Launch interactive menu to configure and run')
 
     args = parser.parse_args()
 
     # Load and merge config
     cfg = load_config(args.config)
     apply_cli_overrides(cfg, args)
+
+    # ── Interactive mode ────────────────────────────────────────
+    if args.interactive:
+        result = interactive_menu(cfg)
+        if result is None:
+            print("Exiting.")
+            sys.exit(0)
+        cfg, selected_modes = result
+    else:
+        selected_modes = ['isr', 'ntisr_ss', 'ntisr_fmv']
 
     # Validate slant range > altitude
     alt_nm = cfg['platform']['altitude_ft'] / 6076.12
@@ -241,7 +254,7 @@ Examples:
     print_config_summary(cfg)
 
     # Run Monte Carlo for each mode
-    modes = ['isr', 'ntisr_ss', 'ntisr_fmv']
+    modes = selected_modes
     mode_names = {
         'isr': 'ISR (Back-Scan Mirror)',
         'ntisr_ss': 'NTISR (Step & Stare)',
