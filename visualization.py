@@ -369,44 +369,65 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200,
         _assemble_video(frame_paths, output_dir, fps=20)
 
 
+def _pad_even(img):
+    """Pad image to even width and height (required by libx264)."""
+    h, w = img.shape[:2]
+    new_h = h if h % 2 == 0 else h + 1
+    new_w = w if w % 2 == 0 else w + 1
+    if new_h != h or new_w != w:
+        padded = np.full((new_h, new_w) + img.shape[2:], 255, dtype=img.dtype)
+        padded[:h, :w] = img
+        return padded
+    return img
+
+
 def _assemble_video(frame_paths: list, output_dir: str, fps: int = 20):
     """
     Assemble PNG frames into a playable MP4 video with a timestamp in the
     filename. Saves the video in the parent of the frames directory (i.e. the
     main output directory).
+
+    Tries three approaches in order:
+      1. imageio-ffmpeg plugin (best quality, requires pip install imageio-ffmpeg)
+      2. Pillow animated GIF fallback (always available, larger file)
+      3. Gives up gracefully — frames are still available as PNGs
     """
     import datetime
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Place the video in the parent output dir (e.g. results/), not inside
-    # the frames subdirectory
     video_dir = os.path.dirname(output_dir) or output_dir
-    video_path = os.path.join(video_dir, f"sensor_animation_{timestamp}.mp4")
 
     print(f"Assembling {len(frame_paths)} frames into video at {fps} fps...")
+
+    # --- Approach 1: imageio + ffmpeg → MP4 ---
     try:
         import imageio
-
-        def _pad_even(img):
-            """Pad image to even width and height (required by libx264)."""
-            h, w = img.shape[:2]
-            new_h = h if h % 2 == 0 else h + 1
-            new_w = w if w % 2 == 0 else w + 1
-            if new_h != h or new_w != w:
-                padded = np.full((*((new_h, new_w) + img.shape[2:]),),
-                                 255, dtype=img.dtype)
-                padded[:h, :w] = img
-                return padded
-            return img
-
-        writer = imageio.get_writer(video_path, fps=fps,
-                                    codec='libx264',
-                                    quality=8,
+        import imageio_ffmpeg  # noqa: F401  — ensure ffmpeg backend exists
+        video_path = os.path.join(video_dir, f"sensor_animation_{timestamp}.mp4")
+        writer = imageio.get_writer(video_path, format='FFMPEG', fps=fps,
+                                    codec='libx264', quality=8,
                                     macro_block_size=1)
         for p in frame_paths:
             writer.append_data(_pad_even(imageio.imread(p)))
         writer.close()
         print(f"Video saved to: {video_path}")
+        return
+    except ImportError:
+        print("  imageio-ffmpeg not installed — trying Pillow GIF fallback...")
     except Exception as e:
-        print(f"Warning: Could not create video — {e}")
-        print("  Frames are still available as individual PNGs.")
+        print(f"  FFmpeg approach failed ({e}) — trying Pillow GIF fallback...")
+
+    # --- Approach 2: Pillow animated GIF ---
+    try:
+        from PIL import Image
+        gif_path = os.path.join(video_dir, f"sensor_animation_{timestamp}.gif")
+        imgs = [Image.open(p) for p in frame_paths]
+        frame_duration_ms = int(1000 / fps)
+        imgs[0].save(gif_path, save_all=True, append_images=imgs[1:],
+                     duration=frame_duration_ms, loop=0)
+        print(f"Animated GIF saved to: {gif_path}")
+        return
+    except Exception as e2:
+        print(f"  GIF fallback also failed ({e2}).")
+
+    print("  Frames are still available as individual PNGs.")
