@@ -1,0 +1,54 @@
+# =============================================================================
+# NTISR vs ISR Operational Analysis — Default Configuration
+# =============================================================================
+
+platform:
+  altitude_ft: 30000          # Platform altitude [ft]
+  speed_kts: 420              # Platform ground speed [kts]
+  heading_deg: 0              # Platform initial heading [deg, 0=North]
+
+geometry:
+  slant_range_nm: 10.0        # Slant range from platform to cell center [nm]
+
+cell:
+  radius_nm: 1.0              # Circular cell radius [nm]
+
+car:
+  speed_kts: 30               # Car ground speed [kts]
+  heading_change_interval_s: 15  # Mean interval between random heading changes [s]
+
+isr:
+  total_fov_deg: 6.0          # Total cross-track FOV of the ISR sensor [deg]
+  ifov_deg: 0.3               # Instantaneous FOV (strip width per mirror position) [deg]
+  sweep_period_s: 2.0         # Time for one full back-and-forth mirror sweep [s]
+  along_track_fov_deg: 1.0    # Along-track extent of the IFOV [deg]
+
+ntisr_step_stare:
+  fov_deg: 0.5                # FOV of the narrow targeting pod [deg]
+  dwell_time_s: 2.0           # Dwell time at each stare position [s]
+  slew_rate_deg_s: 20.0       # Gimbal slew rate between positions [deg/s]
+  scan_pattern: boustrophedon  # Scan pattern: boustrophedon | spiral
+
+ntisr_fmv:
+  fov_deg: 1.0                # FOV for full-motion-video search [deg]
+  search_speed_factor: 0.5    # Fraction of max slew rate used for FMV panning
+  slew_rate_deg_s: 10.0       # Operator panning rate [deg/s]
+  road_bias: 0.7              # Probability operator biases toward roads/parking (0-1)
+  revisit_tendency: 0.3       # Tendency to revisit previously scanned areas (0-1)
+
+detection:
+  pd_in_fov: 0.8              # Base probability of detection when car is inside FOV per dwell
+  pd_decay_exponent: 2.0      # Pd decay with off-boresight angle: Pd * exp(-k * angle^2)
+  min_dwell_for_detect_s: 0.5 # Minimum continuous dwell on target for detection opportunity
+
+simulation:
+  duration_s: 300             # Total simulation duration [s]
+  time_step_s: 0.1            # Simulation time step [s]
+  mc_trials: 500              # Number of Monte Carlo trials
+  random_seed: 42             # Random seed (null for random)
+
+output:
+  animation: true             # Generate animation
+  animation_speed: 5.0        # Animation speedup factor
+  pdf_report: true            # Generate PDF report
+  output_dir: ./results       # Output directory
