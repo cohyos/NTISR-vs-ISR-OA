@@ -277,8 +277,12 @@ def generate_animation_frames(cfg: dict, output_dir: str,
         print("No active sensor modes — skipping animation.")
         return
 
-    # Create shared car (same trajectory for all modes in animation)
-    rng_car = np.random.default_rng(seed)
+    # Create shared car with a unique seed so the animation doesn't
+    # always replay the exact same MC trial (trial 0 with base seed).
+    # Mixing in the current time makes each run visually distinct.
+    import time as _time
+    anim_seed = (seed if seed is not None else 0) + int(_time.time()) % 100000
+    rng_car = np.random.default_rng(anim_seed)
     car = Car(cell_cx, cell_cy, cell_r,
               cfg['car']['speed_kts'],
               cfg['car']['heading_change_interval_s'], rng_car)
@@ -293,7 +297,7 @@ def generate_animation_frames(cfg: dict, output_dir: str,
     # Create sensors only for active modes
     sensors = {}
     for m in modes:
-        rng_s = np.random.default_rng(seed + hash(m) % 10000)
+        rng_s = np.random.default_rng(anim_seed + hash(m) % 10000)
         sensors[m] = build_sensor(m, cfg, cell_cx, cell_cy, rng_s)
 
     # Adaptive figure sizing: 6 inches per panel
