@@ -17,12 +17,59 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
     """
     Generate a multi-page PDF comparing MC results across sensor modes.
 
+    Only includes the sensors that were actually run (present in results).
+
     Args:
-        results: dict mapping mode_name -> MCResult
+        results: dict mapping mode_key -> MCResult (only active modes)
         cfg: configuration dict
         output_path: path to output PDF
     """
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+    all_mode_names = {
+        'isr': 'ISR (Back-Scan)',
+        'ntisr_ss': 'NTISR (Step & Stare)',
+        'ntisr_fmv': 'NTISR (FMV)',
+    }
+    all_colors = {'isr': '#4472C4', 'ntisr_ss': '#ED7D31',
+                  'ntisr_fmv': '#70AD47'}
+
+    # Only include modes that were actually simulated
+    active_modes = [m for m in ['isr', 'ntisr_ss', 'ntisr_fmv']
+                    if m in results]
+    n_modes = len(active_modes)
+    if n_modes == 0:
+        print("No results to report.")
+        return
+
+    duration = cfg['simulation']['duration_s']
+    dt = cfg['simulation']['time_step_s']
+
+    # Sensor config blocks keyed by mode
+    sensor_config_lines = {
+        'isr': [
+            "ISR line scanner:",
+            f"  FOV: {cfg['isr']['fov_deg']}deg, "
+            f"Frame rate: {cfg['isr']['frame_rate_hz']} Hz",
+        ],
+        'ntisr_ss': [
+            "NTISR Step-and-Stare:",
+            f"  FOV: {cfg['ntisr_step_stare']['fov_deg']}deg, "
+            f"Dwell: {cfg['ntisr_step_stare']['dwell_time_s']}s, "
+            f"Slew: {cfg['ntisr_step_stare']['slew_rate_deg_s']}deg/s",
+        ],
+        'ntisr_fmv': [
+            "NTISR FMV:",
+            f"  FOV: {cfg['ntisr_fmv']['fov_deg']}deg, "
+            f"Slew: {cfg['ntisr_fmv']['slew_rate_deg_s']}deg/s, "
+            f"Road bias: {cfg['ntisr_fmv']['road_bias']}",
+        ],
+    }
+    fov_keys = {
+        'isr': ('isr', 'fov_deg', 'ISR frame'),
+        'ntisr_ss': ('ntisr_step_stare', 'fov_deg', 'NTISR S&S'),
+        'ntisr_fmv': ('ntisr_fmv', 'fov_deg', 'NTISR FMV'),
+    }
 
     with PdfPages(output_path) as pdf:
         # --- Page 1: Title and configuration summary ---
@@ -38,36 +85,24 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
             f"Slant range: {cfg['geometry']['slant_range_nm']} nm",
             f"Cell radius: {cfg['cell']['radius_nm']} nm",
             f"Car speed: {cfg['car']['speed_kts']} kts",
-            f"Simulation: {cfg['simulation']['duration_s']}s, "
-            f"dt={cfg['simulation']['time_step_s']}s, "
+            f"Simulation: {duration}s, dt={dt}s, "
             f"{cfg['simulation']['mc_trials']} trials",
-            "",
-            "ISR line scanner:",
-            f"  FOV: {cfg['isr']['fov_deg']}°, "
-            f"Frame rate: {cfg['isr']['frame_rate_hz']} Hz",
-            "",
-            "NTISR Step-and-Stare:",
-            f"  FOV: {cfg['ntisr_step_stare']['fov_deg']}°, "
-            f"Dwell: {cfg['ntisr_step_stare']['dwell_time_s']}s, "
-            f"Slew: {cfg['ntisr_step_stare']['slew_rate_deg_s']}°/s",
-            "",
-            "NTISR FMV:",
-            f"  FOV: {cfg['ntisr_fmv']['fov_deg']}°, "
-            f"Slew: {cfg['ntisr_fmv']['slew_rate_deg_s']}°/s, "
-            f"Road bias: {cfg['ntisr_fmv']['road_bias']}",
         ]
+        for m in active_modes:
+            config_lines.append("")
+            config_lines.extend(sensor_config_lines[m])
+
         ax.text(0.1, 0.65, '\n'.join(config_lines), transform=ax.transAxes,
                 fontsize=10, va='top', fontfamily='monospace')
 
-        # Footprint sizes
+        # Footprint sizes — only for active sensors
         fp_lines = ["\nGround Footprint Sizes:"]
-        for label, fov_key in [("ISR frame", ('isr', 'fov_deg')),
-                                ("NTISR S&S", ('ntisr_step_stare', 'fov_deg')),
-                                ("NTISR FMV", ('ntisr_fmv', 'fov_deg'))]:
+        for m in active_modes:
+            sec, key, label = fov_keys[m]
             fp_nm = ground_footprint_at_cell(
                 cfg['platform']['altitude_ft'],
                 cfg['geometry']['slant_range_nm'],
-                cfg[fov_key[0]][fov_key[1]])
+                cfg[sec][key])
             fp_lines.append(f"  {label}: {fp_nm:.4f} nm ({fp_nm*6076:.0f} ft)")
         ax.text(0.1, 0.18, '\n'.join(fp_lines), transform=ax.transAxes,
                 fontsize=10, va='top', fontfamily='monospace')
@@ -81,51 +116,23 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
                 transform=ax.transAxes, fontsize=16, ha='center',
                 fontweight='bold')
 
-        col_labels = ['Metric', 'ISR\n(Back-Scan)', 'NTISR\n(Step&Stare)',
-                      'NTISR\n(FMV)']
-        mode_order = ['isr', 'ntisr_ss', 'ntisr_fmv']
-        mode_names = {'isr': 'ISR', 'ntisr_ss': 'NTISR S&S',
-                      'ntisr_fmv': 'NTISR FMV'}
+        col_labels = ['Metric'] + [all_mode_names[m] for m in active_modes]
 
         def fmt_time(v):
             return f"{v:.1f}s" if np.isfinite(v) else "Never"
 
-        rows = []
-        # Overall detection fraction
-        row = ['Detection rate (%)']
-        for m in mode_order:
-            if m in results:
-                row.append(f"{results[m].overall_detect_fraction*100:.1f}%")
-            else:
-                row.append('N/A')
-        rows.append(row)
-
-        # Mean TTFD
-        row = ['Mean time to 1st detect']
-        for m in mode_order:
-            if m in results:
-                row.append(fmt_time(results[m].mean_ttfd))
-            else:
-                row.append('N/A')
-        rows.append(row)
-
-        # Median TTFD
-        row = ['Median time to 1st detect']
-        for m in mode_order:
-            if m in results:
-                row.append(fmt_time(results[m].median_ttfd))
-            else:
-                row.append('N/A')
-        rows.append(row)
-
-        # Mean total detections
-        row = ['Mean detection events']
-        for m in mode_order:
-            if m in results:
-                row.append(f"{np.mean(results[m].total_detections):.1f}")
-            else:
-                row.append('N/A')
-        rows.append(row)
+        rows = [
+            ['Detection rate (%)'] + [
+                f"{results[m].overall_detect_fraction*100:.1f}%"
+                for m in active_modes],
+            ['Mean time to 1st detect'] + [
+                fmt_time(results[m].mean_ttfd) for m in active_modes],
+            ['Median time to 1st detect'] + [
+                fmt_time(results[m].median_ttfd) for m in active_modes],
+            ['Mean detection events'] + [
+                f"{np.mean(results[m].total_detections):.1f}"
+                for m in active_modes],
+        ]
 
         table = ax.table(cellText=rows, colLabels=col_labels,
                          loc='center', cellLoc='center')
@@ -143,23 +150,18 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
 
         # --- Page 3: CDF of time to first detection ---
         fig, ax = plt.subplots(figsize=(11, 8.5))
-        colors = {'isr': '#4472C4', 'ntisr_ss': '#ED7D31',
-                  'ntisr_fmv': '#70AD47'}
-        duration = cfg['simulation']['duration_s']
-        dt = cfg['simulation']['time_step_s']
 
-        for m in mode_order:
-            if m not in results:
-                continue
+        for m in active_modes:
             r = results[m]
-            # Build CDF from time_to_first_detect
             sorted_ttfd = np.sort(r.time_to_first_detect[
                 np.isfinite(r.time_to_first_detect)])
             if len(sorted_ttfd) == 0:
                 continue
             cdf_y = np.arange(1, len(sorted_ttfd) + 1) / r.n_trials
-            ax.plot(sorted_ttfd, cdf_y, color=colors[m], linewidth=2,
-                    label=f"{mode_names[m]}")
+            ax.step(sorted_ttfd, cdf_y, where='post',
+                    color=all_colors[m], linewidth=2,
+                    label=f"{all_mode_names[m]} "
+                          f"({r.overall_detect_fraction*100:.0f}% final)")
 
         ax.set_xlabel('Time [s]', fontsize=12)
         ax.set_ylabel('Cumulative Detection Probability', fontsize=12)
@@ -172,40 +174,45 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # --- Page 4: Mean cumulative Pd over time ---
+        # --- Page 4: Detection rate by time window ---
         fig, ax = plt.subplots(figsize=(11, 8.5))
-        time_axis = np.arange(results[mode_order[0]].n_steps) * dt
+        n_bins = min(20, max(5, int(duration / 15)))
+        bin_edges = np.linspace(0, duration, n_bins + 1)
+        bin_width = bin_edges[1] - bin_edges[0]
+        bar_width = bin_width / (n_modes + 1)
 
-        for m in mode_order:
-            if m not in results:
-                continue
+        for i, m in enumerate(active_modes):
             r = results[m]
-            ax.plot(time_axis, r.mean_cumulative_pd, color=colors[m],
-                    linewidth=2, label=f"{mode_names[m]}")
+            finite_ttfd = r.time_to_first_detect[
+                np.isfinite(r.time_to_first_detect)]
+            counts, _ = np.histogram(finite_ttfd, bins=bin_edges)
+            rate = counts / r.n_trials * 100  # percent of trials
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            offset = (i - (n_modes - 1) / 2) * bar_width
+            ax.bar(bin_centers + offset, rate, width=bar_width * 0.9,
+                   color=all_colors[m], alpha=0.85,
+                   label=all_mode_names[m])
 
         ax.set_xlabel('Time [s]', fontsize=12)
-        ax.set_ylabel('Fraction of Trials with Detection', fontsize=12)
-        ax.set_title('Cumulative Detection Fraction Over Time', fontsize=14,
+        ax.set_ylabel('New Detections (% of trials)', fontsize=12)
+        ax.set_title('First-Detection Rate by Time Window', fontsize=14,
                      fontweight='bold')
         ax.legend(fontsize=11)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, axis='y')
         ax.set_xlim(0, duration)
-        ax.set_ylim(0, 1.05)
         pdf.savefig(fig)
         plt.close(fig)
 
         # --- Page 5: Histogram of detection counts ---
-        fig, axes = plt.subplots(1, 3, figsize=(11, 5))
-        for idx, m in enumerate(mode_order):
-            if m not in results:
-                continue
+        fig, axes = plt.subplots(1, n_modes, figsize=(11, 5), squeeze=False)
+        for idx, m in enumerate(active_modes):
             r = results[m]
-            ax = axes[idx]
+            ax = axes[0, idx]
             max_det = max(int(np.max(r.total_detections)), 1)
             bins = np.arange(0, max_det + 2) - 0.5
-            ax.hist(r.total_detections, bins=bins, color=colors[m],
+            ax.hist(r.total_detections, bins=bins, color=all_colors[m],
                     edgecolor='white', alpha=0.85)
-            ax.set_title(mode_names[m], fontsize=12, fontweight='bold')
+            ax.set_title(all_mode_names[m], fontsize=12, fontweight='bold')
             ax.set_xlabel('Detection Events')
             ax.set_ylabel('Trials')
             ax.grid(True, alpha=0.3)
@@ -240,7 +247,7 @@ def generate_animation_frames(cfg: dict, output_dir: str, n_frames: int = 200,
     from car_model import Car
 
     dt = cfg['simulation']['time_step_s']
-    duration = min(cfg['simulation']['duration_s'], 60.0)  # Cap animation at 60s
+    duration = cfg['simulation']['duration_s']
     speed_factor = cfg['output'].get('animation_speed', 5.0)
     frame_dt = duration / n_frames
     steps_per_frame = max(1, int(frame_dt / dt))
