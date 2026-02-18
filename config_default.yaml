@@ -50,3 +50,10 @@ output:
   animation_speed: 5.0        # Animation speedup factor
   pdf_report: true            # Generate PDF report
   output_dir: ./results       # Output directory
+
+advanced:
+  n_targets: 1                # Number of targets in the cell (multi-target)
+  parallel_workers: 0         # Parallel MC workers (0 = auto, 1 = sequential)
+  orbit_radius_nm: 5.0        # Racetrack orbit radius [nm]
+  orbit_period_s: 300.0       # Orbit period [s]
+  orbit_cell_offset_nm: 8.0   # Ground offset from orbit center to cell [nm]

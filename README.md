@@ -5,9 +5,10 @@ moving ground target.**
 
 This simulation tool evaluates the detection performance of ISR (Intelligence,
 Surveillance, and Reconnaissance) and NTISR (Non-Traditional ISR) sensor
-configurations when searching for a single vehicle moving inside a circular
+configurations when searching for moving vehicles inside a circular
 geographic cell.  It produces statistical metrics (detection rate, time to
-first detection), PDF reports, optimisation sweeps, and sensitivity analyses.
+first detection, search efficiency), PDF reports, optimisation sweeps,
+sensitivity analyses, and advanced multi-dimensional comparisons.
 
 ---
 
@@ -24,23 +25,31 @@ first detection), PDF reports, optimisation sweeps, and sensitivity analyses.
    - [NTISR Full Motion Video (FMV)](#3-ntisr-full-motion-video-fmv)
 7. [Target (Car) Model](#target-car-model)
 8. [Geometry & Physics](#geometry--physics)
-9. [Detection Probability Theory](#detection-probability-theory)
-   - [Cookie-Cutter Detection Model](#cookie-cutter-detection-model)
-   - [Cumulative Detection Probability](#cumulative-detection-probability)
-   - [Operator Recognition Model (FMV)](#operator-recognition-model-fmv)
-   - [Calibration Method](#calibration-method)
-10. [Mathematical Formulas & Models](#mathematical-formulas--models)
+9. [Efficiency Metrics](#efficiency-metrics)
+10. [Detection Probability Theory](#detection-probability-theory)
+    - [Cookie-Cutter Detection Model](#cookie-cutter-detection-model)
+    - [Cumulative Detection Probability](#cumulative-detection-probability)
+    - [Operator Recognition Model (FMV)](#operator-recognition-model-fmv)
+    - [Calibration Method](#calibration-method)
+11. [Mathematical Formulas & Models](#mathematical-formulas--models)
     - [Slant-Range Geometry](#slant-range-geometry)
     - [FOV-to-Footprint Projection](#fov-to-footprint-projection)
     - [Boustrophedon Scan Pattern](#boustrophedon-scan-pattern)
     - [Reflective Boundary Motion](#reflective-boundary-motion)
     - [Per-Step Detection Probability](#per-step-detection-probability)
     - [Monte Carlo Aggregation](#monte-carlo-aggregation)
-11. [Configuration Reference](#configuration-reference)
-12. [ISR Optimisation](#isr-optimisation)
-13. [Comprehensive Report](#comprehensive-report)
-14. [Output Files](#output-files)
-15. [References & Sources](#references--sources)
+12. [Configuration Reference](#configuration-reference)
+13. [ISR Optimisation](#isr-optimisation)
+14. [Advanced Analysis](#advanced-analysis)
+    - [Duration Crossover Analysis](#duration-crossover-analysis)
+    - [Multi-Platform Comparison](#multi-platform-comparison)
+    - [Multi-Target Scenarios](#multi-target-scenarios)
+    - [Moving Platform (Orbit) Analysis](#moving-platform-orbit-analysis)
+    - [Parallel MC Execution](#parallel-mc-execution)
+    - [Per-Trial Raw Data Export](#per-trial-raw-data-export)
+15. [Comprehensive Report](#comprehensive-report)
+16. [Output Files](#output-files)
+17. [References & Sources](#references--sources)
 
 ---
 
@@ -54,17 +63,22 @@ The tool compares three sensor modes under identical conditions:
 | **NTISR Step-and-Stare** | Narrow-FOV targeting pod, systematic raster | Dwell at each position, slew to next |
 | **NTISR FMV** | Operator-guided full-motion-video search | Biased random walk toward road features |
 
-All three modes search for a single moving vehicle inside a circular cell.  The
-platform is treated as stationary (orbiting) above the cell for the simulation
-duration.
+All three modes search for one or more moving vehicles inside a circular cell.
+The platform can be modelled as stationary or flying a racetrack orbit with
+time-varying slant range.
 
 **Key performance metrics:**
 
-- **Detection rate**: fraction of Monte Carlo trials where the target was
-  detected at least once
+- **Detection rate**: fraction of Monte Carlo trials where at least one target
+  was detected
 - **Mean / Median TTFD**: Time To First Detection — how quickly the sensor
   finds the target
 - **Cumulative Pd(t)**: probability that the target has been detected by time t
+- **DTI**: Detection Timeliness Index — normalised AUC of the cumulative Pd
+  curve (1.0 = instant detection, 0.0 = never detected)
+- **Coverage ratio**: total area swept by the sensor / cell area
+- **SEI**: Search Efficiency Index = DTI / Coverage ratio — measures how
+  efficiently the sensor converts area coverage into detections
 
 ---
 
@@ -104,6 +118,10 @@ python optimize_isr_scan.py --quick
 
 # Generate comprehensive report
 python report_generator.py
+
+# Run advanced analyses (interactive menu option 15)
+# Includes: duration crossover, multi-platform, multi-target, orbit analysis
+python main.py --interactive    # then select option 15
 ```
 
 ---
@@ -112,7 +130,7 @@ python report_generator.py
 
 ```
 main.py                 # Entry point — CLI and interactive launcher
-interactive_menu.py     # Curses-style interactive parameter editor
+interactive_menu.py     # Numbered-menu interactive parameter editor
 config_default.yaml     # Default configuration (all parameters)
 mc_engine.py            # Monte Carlo engine — run_mc(), MCResult
 sensors.py              # Sensor classes: ISRLineScan, NTISRStepStare, NTISRFMV
@@ -121,6 +139,7 @@ geometry.py             # Slant-range geometry, FOV-to-footprint, coordinate uti
 visualization.py        # PDF report generation, animation frames
 optimize_isr_scan.py    # ISR parameter sweep optimizer
 report_generator.py     # Comprehensive report with manual, optimization, sensitivity
+advanced_analysis.py    # Advanced analyses: crossover, multi-platform, multi-target, orbit
 ```
 
 ---
@@ -245,9 +264,11 @@ The ground target is a vehicle moving inside the circular search cell:
 - **Speed:** constant (default 30 kts = 0.00833 nm/s)
 - **Heading changes:** exponentially distributed intervals (mean =
   `heading_change_interval_s`, default 15 s); new heading drawn uniformly
-- **Reflective boundary:** when the car would exit the cell, the velocity
-  component normal to the boundary is reversed (specular reflection), and the
-  car is placed just inside the boundary
+- **Reflective boundary:** when the car would exit the cell, a new heading is
+  drawn from a ±30° inward cone centred on the boundary inward normal.  The
+  heading-change timer is reset to prevent the car from immediately turning
+  back toward the edge.  This avoids the tangential sliding artefact that
+  specular reflection causes on grazing incidence against a circular boundary.
 
 > **Implementation:** `car_model.py → Car`
 
@@ -303,6 +324,56 @@ inside = |local_x| <= w/2  AND  |local_y| <= h/2
 ```
 
 > **Implementation:** `geometry.py`
+
+---
+
+## Efficiency Metrics
+
+Beyond basic detection rate and TTFD, the simulation computes composite
+efficiency metrics that enable fair comparison across fundamentally different
+sensor modalities.
+
+### Detection Timeliness Index (DTI)
+
+The DTI is the normalised area under the cumulative detection probability
+curve:
+
+```
+DTI = (1 / T) * integral_0^T Pd_cumulative(t) dt
+```
+
+Where `T` is the simulation duration and `Pd_cumulative(t)` is the fraction of
+trials that have achieved at least one detection by time `t`.  A sensor that
+detects instantly in every trial has DTI = 1.0; a sensor that never detects has
+DTI = 0.0.  DTI captures both the detection rate and how early detections
+occur.
+
+### Coverage Ratio
+
+Each sensor tracks the total ground area it sweeps during the simulation:
+
+```
+Coverage_ratio = total_area_swept / cell_area
+```
+
+ISR sensors with wide FOV and fast scan rates achieve high coverage ratios (>>1
+means the cell is covered multiple times).  NTISR sensors with narrow FOV
+typically achieve lower coverage ratios.
+
+### Search Efficiency Index (SEI)
+
+The SEI measures how efficiently a sensor converts area coverage into
+detections:
+
+```
+SEI = DTI / Coverage_ratio
+```
+
+A high SEI indicates the sensor is making good use of the area it scans.  A
+low SEI indicates the sensor is sweeping large areas but achieving relatively
+few or late detections.  This metric is particularly useful for comparing ISR
+(high coverage, moderate detection rate) against NTISR FMV (low coverage, high
+detection quality per look).
 
 ---
 
@@ -501,15 +572,19 @@ If the new position would be outside the cell (`||p_new - c|| > R_cell`):
 
 ```
 n = (p_new - c) / ||p_new - c||            [outward unit normal]
-v_vec = v * [cos(psi), sin(psi)]            [velocity vector]
-v_reflected = v_vec - 2 * (v_vec . n) * n   [specular reflection]
-psi_new = arctan2(v_reflected_y, v_reflected_x)
-position = c + n * (R_cell - epsilon)       [place just inside boundary]
+inward_angle = arctan2(-n_y, -n_x)         [angle of inward normal]
+jitter = U(-pi/6, pi/6)                    [±30° random offset]
+psi_new = inward_angle + jitter            [new heading into the cell]
+contact = c + n * R_cell                   [boundary contact point]
+p_new = contact + [cos(psi_new), sin(psi_new)] * overshoot
 ```
 
-This reflective boundary is a standard technique in diffusion and random-walk
-models.  It ensures the car remains inside the cell at all times while
-maintaining a physically plausible trajectory.
+The heading-change timer is reset to a fresh exponential draw so the car
+maintains its inward heading long enough to move away from the edge.  A safety
+clamp at 90% of the cell radius catches any residual edge cases.
+
+This inward-cone approach replaces the classical specular reflection, which
+can cause the car to slide along the boundary at grazing incidence angles.
 
 > **Ref:** Chandrasekhar, S. (1943). "Stochastic Problems in Physics and
 > Astronomy." *Reviews of Modern Physics*, 15(1), pp. 1–89.
@@ -651,6 +726,16 @@ flags or the interactive menu.
 | MC Trials | `simulation.mc_trials` | 500 | — | Number of Monte Carlo trials |
 | Random Seed | `simulation.random_seed` | 42 | — | Deterministic seed (null = random) |
 
+### Advanced Parameters
+
+| Parameter | YAML Key | Default | Unit | Description |
+|-----------|----------|---------|------|-------------|
+| N Targets | `advanced.n_targets` | 1 | — | Number of targets simultaneously in the cell |
+| Parallel Workers | `advanced.parallel_workers` | 0 | — | MC worker processes (0 = auto, 1 = sequential) |
+| Orbit Radius | `advanced.orbit_radius_nm` | 5.0 | nm | Racetrack orbit radius |
+| Orbit Period | `advanced.orbit_period_s` | 300.0 | s | Time for one complete orbit |
+| Orbit Cell Offset | `advanced.orbit_cell_offset_nm` | 8.0 | nm | Ground distance from orbit centre to cell |
+
 ---
 
 ## ISR Optimisation
@@ -696,6 +781,135 @@ python optimize_isr_scan.py --no-heatmap      # Skip heatmap generation
 
 ---
 
+## Advanced Analysis
+
+The advanced analysis module (`advanced_analysis.py`) provides four additional
+analyses that explore dimensions beyond the basic ISR-vs-NTISR comparison.
+All analyses can be run standalone, from the interactive menu (option 15), or
+embedded in the comprehensive report.
+
+### Duration Crossover Analysis
+
+Sweeps observation duration from 30 s to 600 s (configurable) to identify
+the crossover point where slower sensor modes (NTISR) catch up to or surpass
+faster ones (ISR) as more observation time becomes available.
+
+**Outputs:**
+- Detection rate vs duration (all three modes)
+- Mean TTFD vs duration
+- DTI and SEI vs duration
+- CSV: `results/duration_crossover.csv`
+
+**Default durations:** 30, 60, 120, 180, 300, 450, 600 seconds
+
+### Multi-Platform Comparison
+
+Compares detection performance across four predefined platform profiles, each
+representing a different altitude and slant-range combination:
+
+| Profile | Altitude | Slant Range |
+|---------|----------|-------------|
+| High-Alt ISR | 45,000 ft | 20 nm |
+| Mid-Alt ISR | 30,000 ft | 10 nm |
+| Low-Alt NTISR | 15,000 ft | 5 nm |
+| Fighter Pod | 20,000 ft | 8 nm |
+
+Each profile is run with all three sensor modes.  The analysis reveals which
+sensor mode benefits most from closer range and which platform is most
+efficient for each mission type.
+
+**Outputs:**
+- Detection rate grouped bar chart by platform
+- SEI comparison by platform
+- Summary table with all combinations
+- CSV: `results/multi_platform.csv`
+
+### Multi-Target Scenarios
+
+Runs simulations with 1, 2, 3, 5, and 8 targets simultaneously in the cell.
+Each target moves independently with its own random walk.  The analysis tracks:
+
+- **Detect-any rate:** probability of finding at least one target
+- **Mean fraction detected:** average percentage of all targets found
+
+This reveals how each sensor mode scales with target density — wide-area ISR
+benefits from more targets (higher chance of a target being in the scan path),
+while NTISR FMV maintains high per-look detection quality.
+
+**Outputs:**
+- Detect-any rate vs target count
+- Mean fraction detected vs target count
+- CSV: `results/multi_target.csv`
+
+### Moving Platform (Orbit) Analysis
+
+Models a platform flying a circular racetrack orbit instead of hovering
+stationary.  The orbit produces time-varying slant range as the platform
+moves closer to and farther from the cell centre.
+
+```
+Platform position:  x(t) = R_orbit * cos(2*pi*t / T) + offset_x
+                    y(t) = R_orbit * sin(2*pi*t / T)
+
+Slant range:        SR(t) = sqrt(h^2 + x(t)^2 + y(t)^2)
+```
+
+The analysis samples the orbit at 6 equally-spaced phases and compares the
+orbit-averaged detection rate against the stationary baseline.
+
+**Outputs:**
+- Detection rate: stationary vs orbit average (grouped bars)
+- Detection rate along orbit phases (vs instantaneous slant range)
+
+### Parallel MC Execution
+
+Monte Carlo trials can be distributed across multiple CPU cores using Python's
+`multiprocessing.Pool`.  This is transparent to the user — set
+`advanced.parallel_workers` in the config (0 = use all available cores minus
+one, 1 = sequential).
+
+The parallel executor falls back gracefully to sequential execution if the
+process pool fails to start.
+
+### Per-Trial Raw Data Export
+
+Exports every Monte Carlo trial's results to a CSV file for downstream
+analysis in external tools (R, Excel, MATLAB, etc.).
+
+```bash
+# From the interactive menu: option 16
+# Or programmatically:
+python -c "
+from mc_engine import run_mc
+from advanced_analysis import export_per_trial_csv
+import yaml
+cfg = yaml.safe_load(open('config_default.yaml'))
+results = {m: run_mc(cfg, m) for m in ['isr', 'ntisr_ss', 'ntisr_fmv']}
+export_per_trial_csv(results, 'results/raw_data.csv')
+"
+```
+
+**CSV columns:** `mode, trial, detected, ttfd_s, total_detections`
+
+### Usage
+
+```bash
+# Run all advanced analyses (standalone)
+python -c "
+import yaml
+from advanced_analysis import run_all_advanced_analyses
+cfg = yaml.safe_load(open('config_default.yaml'))
+run_all_advanced_analyses(cfg, trials_per_point=50, n_workers=4)
+"
+
+# From the interactive menu
+python main.py --interactive
+# Select option 15 for advanced analysis suite
+# Select option 16 for per-trial CSV export
+```
+
+---
+
 ## Comprehensive Report
 
 The report generator (`report_generator.py`) produces a multi-page PDF that
@@ -708,6 +922,8 @@ serves as both documentation and results archive:
 5. **Configuration summary** — all active parameter values
 6. **ISR optimisation results** — parameter sweep table and heatmaps
 7. **Sensitivity analysis** — one-at-a-time (OAT) parameter sweeps
+8. **Advanced analyses** (optional) — duration crossover, multi-platform
+   comparison, multi-target scaling, and moving platform orbit analysis
 
 ### Sensitivity Parameters Swept
 
@@ -741,9 +957,14 @@ python report_generator.py --opt-trials 100     # More trials per point
 |------|-------------|
 | `results/ntisr_vs_isr_report.pdf` | Standard comparison report (from main.py) |
 | `results/comprehensive_report.pdf` | Full report with manual, optimisation, sensitivity |
+| `results/advanced_analysis.pdf` | Advanced analysis report (crossover, multi-platform, etc.) |
 | `results/isr_optimization.csv` | ISR parameter sweep results |
 | `results/isr_optimization_heatmap.pdf` | Optimisation heatmap visualisation |
 | `results/sensitivity_analysis.csv` | OAT sensitivity sweep results |
+| `results/duration_crossover.csv` | Detection rate vs observation duration |
+| `results/multi_platform.csv` | Multi-platform comparison results |
+| `results/multi_target.csv` | Multi-target scaling results |
+| `results/per_trial_raw_data.csv` | Per-trial raw MC data (all modes) |
 | `results/animation_frames/` | Animation frame images (if enabled) |
 
 ---

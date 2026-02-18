@@ -656,6 +656,9 @@ def generate_comprehensive_report(cfg, output_dir="./results",
                                   optimization_quick=True,
                                   optimization_trials=50,
                                   sensitivity_trials=50,
+                                  run_advanced=False,
+                                  advanced_trials=50,
+                                  advanced_workers=None,
                                   progress_fn=None):
     """
     Generate a comprehensive PDF report with manual, optimisation
@@ -849,6 +852,63 @@ def generate_comprehensive_report(cfg, output_dir="./results",
             _log(f"  Sensitivity CSV saved: "
                  f"{os.path.abspath(sensitivity_csv_path)}")
 
+        # ── Advanced analyses (optional) ───────────────────────────
+        adv_files = {}
+        if run_advanced:
+            _log("  Running advanced analyses (crossover, multi-platform, "
+                 "multi-target, orbit)...")
+            try:
+                from advanced_analysis import (
+                    run_duration_crossover, plot_duration_crossover,
+                    run_multi_platform, plot_multi_platform,
+                    run_multi_target, plot_multi_target,
+                    run_moving_platform, plot_moving_platform,
+                    export_crossover_csv, export_multi_platform_csv,
+                    export_multi_target_csv,
+                )
+
+                modes = ['isr', 'ntisr_ss', 'ntisr_fmv']
+
+                # Duration crossover
+                _log("    Duration crossover...")
+                crossover = run_duration_crossover(
+                    cfg, modes=modes, trials_per_point=advanced_trials,
+                    n_workers=advanced_workers, progress_fn=_log)
+                plot_duration_crossover(pdf, crossover, modes)
+                csv_c = os.path.join(output_dir, 'duration_crossover.csv')
+                export_crossover_csv(crossover, csv_c)
+                adv_files['crossover_csv'] = csv_c
+
+                # Multi-platform
+                _log("    Multi-platform comparison...")
+                mp = run_multi_platform(
+                    cfg, modes=modes, trials_per_point=advanced_trials,
+                    n_workers=advanced_workers, progress_fn=_log)
+                plot_multi_platform(pdf, mp)
+                csv_mp = os.path.join(output_dir, 'multi_platform.csv')
+                export_multi_platform_csv(mp, csv_mp)
+                adv_files['multi_platform_csv'] = csv_mp
+
+                # Multi-target
+                _log("    Multi-target analysis...")
+                mt = run_multi_target(
+                    cfg, modes=modes, trials_per_point=advanced_trials,
+                    n_workers=advanced_workers, progress_fn=_log)
+                plot_multi_target(pdf, mt)
+                csv_mt = os.path.join(output_dir, 'multi_target.csv')
+                export_multi_target_csv(mt, csv_mt)
+                adv_files['multi_target_csv'] = csv_mt
+
+                # Moving platform
+                _log("    Moving platform orbit analysis...")
+                orbit = run_moving_platform(
+                    cfg, modes=modes, trials_per_point=advanced_trials,
+                    progress_fn=_log)
+                plot_moving_platform(pdf, orbit)
+
+            except Exception as exc:
+                _log(f"    Advanced analysis error: {exc}")
+
         # ── Summary / key findings page ─────────────────────────────
         fig, ax = plt.subplots(figsize=(8.5, 11))
         ax.axis("off")
@@ -916,6 +976,7 @@ def generate_comprehensive_report(cfg, output_dir="./results",
     output_files = {"pdf": pdf_path, "sensitivity_csv": sensitivity_csv_path}
     if run_optimization:
         output_files["optimization_csv"] = csv_path
+    output_files.update(adv_files)
     return output_files
 
 

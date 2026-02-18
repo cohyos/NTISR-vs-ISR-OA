@@ -635,6 +635,14 @@ def _generate_report(cfg):
     sens_trials = _read_int("MC trials per sensitivity point", 50,
                             lo=5, hi=10000)
 
+    print()
+    run_adv = _read_bool("Include advanced analyses (crossover, "
+                         "multi-platform, multi-target, orbit)?", False)
+    adv_trials = 50
+    if run_adv:
+        adv_trials = _read_int("MC trials per advanced analysis point", 50,
+                               lo=5, hi=10000)
+
     output_dir = cfg['output'].get('output_dir', './results')
     print()
     raw = input(f"  Output directory [{output_dir}]: ").strip()
@@ -649,6 +657,11 @@ def _generate_report(cfg):
     try:
         from report_generator import generate_comprehensive_report
 
+        adv_workers = cfg.get('advanced', {}).get('parallel_workers', 0)
+        if adv_workers == 0:
+            import multiprocessing as _mp
+            adv_workers = max(1, _mp.cpu_count() - 1)
+
         files = generate_comprehensive_report(
             cfg,
             output_dir=output_dir,
@@ -656,6 +669,9 @@ def _generate_report(cfg):
             optimization_quick=opt_quick,
             optimization_trials=opt_trials,
             sensitivity_trials=sens_trials,
+            run_advanced=run_adv,
+            advanced_trials=adv_trials,
+            advanced_workers=adv_workers,
         )
 
         print()
@@ -668,6 +684,124 @@ def _generate_report(cfg):
                   f"{os.path.abspath(files['optimization_csv'])}")
         print(f"  Sensitivity CSV:  "
               f"{os.path.abspath(files['sensitivity_csv'])}")
+
+    except Exception as exc:
+        print(f"\n  ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    print()
+    _pause()
+
+
+# ── advanced analysis runner ──────────────────────────────────────────
+
+def _run_advanced_analysis(cfg):
+    """Launch the advanced analysis suite from the menu."""
+    _clear()
+    print("=" * 55)
+    print("  Advanced Analysis Suite")
+    print("=" * 55)
+    print()
+    print("  This runs four analyses and produces a PDF + CSVs:")
+    print("    1. Duration crossover (det rate vs obs time)")
+    print("    2. Multi-platform comparison (4 alt/SR profiles)")
+    print("    3. Multi-target (1-8 targets in the cell)")
+    print("    4. Moving platform (racetrack orbit vs stationary)")
+    print()
+
+    trials = _read_int("MC trials per data point", 50, lo=5, hi=10000)
+
+    output_dir = cfg['output'].get('output_dir', './results')
+    print()
+    raw = input(f"  Output directory [{output_dir}]: ").strip()
+    if raw:
+        output_dir = raw
+
+    adv = cfg.get('advanced', {})
+    n_workers = adv.get('parallel_workers', 0)
+    if n_workers == 0:
+        import multiprocessing as _mp
+        n_workers = max(1, _mp.cpu_count() - 1)
+
+    print()
+    print(f"  Starting ({n_workers} workers, {trials} trials/point)...")
+    print("  (progress shown below)")
+    print()
+
+    try:
+        from advanced_analysis import run_all_advanced_analyses
+        files = run_all_advanced_analyses(
+            cfg, output_dir=output_dir,
+            trials_per_point=trials,
+            n_workers=n_workers,
+        )
+
+        print()
+        print("  " + "=" * 50)
+        print("  Advanced analysis complete!")
+        print("  " + "=" * 50)
+        for k, v in files.items():
+            print(f"  {k:25s}: {os.path.abspath(v)}")
+
+    except Exception as exc:
+        print(f"\n  ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    print()
+    _pause()
+
+
+def _run_export_raw(cfg, selected_modes):
+    """Export per-trial raw data after running MC for selected modes."""
+    _clear()
+    print("=" * 55)
+    print("  Export Per-Trial Raw Data")
+    print("=" * 55)
+    print()
+    print("  Runs MC for the selected sensor modes and exports")
+    print("  every trial's TTFD and detection count to CSV.")
+    print()
+
+    if not selected_modes:
+        print("  No sensor modes selected. Use option 9 first.")
+        _pause()
+        return
+
+    mode_labels = {
+        'isr': 'ISR', 'ntisr_ss': 'NTISR S&S', 'ntisr_fmv': 'NTISR FMV',
+    }
+    print(f"  Modes: {', '.join(mode_labels.get(m, m) for m in selected_modes)}")
+    print(f"  Trials: {cfg['simulation']['mc_trials']}")
+    print()
+
+    output_dir = cfg['output'].get('output_dir', './results')
+    raw = input(f"  Output directory [{output_dir}]: ").strip()
+    if raw:
+        output_dir = raw
+    print()
+
+    print("  Running MC simulations...")
+    try:
+        from mc_engine import run_mc
+        from advanced_analysis import export_per_trial_csv
+
+        results = {}
+        for mode in selected_modes:
+            label = mode_labels.get(mode, mode)
+            print(f"    {label}...", end=" ", flush=True)
+            results[mode] = run_mc(cfg, mode)
+            r = results[mode]
+            print(f"det={r.overall_detect_fraction*100:.1f}%, "
+                  f"TTFD={r.mean_ttfd:.1f}s")
+
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, 'per_trial_raw_data.csv')
+        export_per_trial_csv(results, csv_path)
+
+        print()
+        print(f"  Exported to: {os.path.abspath(csv_path)}")
 
     except Exception as exc:
         print(f"\n  ERROR: {exc}")
@@ -721,6 +855,9 @@ def interactive_menu(cfg):
         print("  ─────────────────────────────────────────")
         print("  13. Run ISR Optimisation (parameter sweep)")
         print("  14. Generate Comprehensive Report")
+        print("  15. Run Advanced Analysis (crossover,")
+        print("      multi-platform, multi-target, orbit)")
+        print("  16. Export per-trial raw data (CSV)")
         print()
         print("  R.  Run simulation")
         print("  Q.  Quit")
@@ -756,6 +893,10 @@ def interactive_menu(cfg):
             _run_optimization(cfg)
         elif choice == '14':
             _generate_report(cfg)
+        elif choice == '15':
+            _run_advanced_analysis(cfg)
+        elif choice == '16':
+            _run_export_raw(cfg, selected_modes)
         elif choice == 'r':
             if not selected_modes:
                 print("  No sensor modes selected. Pick at least one (option 9).")
