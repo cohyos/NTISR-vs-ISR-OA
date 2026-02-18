@@ -453,6 +453,228 @@ def _deep_update(base, override):
             base[k] = v
 
 
+# ── ISR optimisation runner ──────────────────────────────────────────
+
+def _run_optimization(cfg):
+    """Run the ISR parameter sweep optimisation from the menu."""
+    _clear()
+    print("=" * 55)
+    print("  ISR Scan Parameter Optimisation")
+    print("=" * 55)
+    print()
+    print("  This sweeps ISR sensor and environmental parameters")
+    print("  to find the combination that maximises detection.")
+    print()
+    print("  Grid options:")
+    print("    Quick  — ~96 combinations  (a few minutes)")
+    print("    Full   — ~6,480 combinations (may take hours)")
+    print()
+
+    quick = True
+    raw = input("  Grid mode (1=Quick, 2=Full) [1]: ").strip()
+    if raw == '2':
+        quick = False
+    print()
+
+    trials = _read_int("MC trials per point", 50, lo=5, hi=10000)
+    top_n = _read_int("Top N results to display", 10, lo=1, hi=100)
+    print()
+
+    output_dir = cfg['output'].get('output_dir', './results')
+    raw = input(f"  Output directory [{output_dir}]: ").strip()
+    if raw:
+        output_dir = raw
+    print()
+
+    # Run via the standalone optimize_isr_scan module
+    print("  Starting optimisation...")
+    print("  (this may take a while — progress is shown below)")
+    print()
+
+    try:
+        from optimize_isr_scan import (load_base_config, build_sweep_grid,
+                                       total_combinations, evaluate_point,
+                                       write_csv, print_summary,
+                                       generate_heatmap, format_eta)
+        import itertools
+        import time
+
+        base_cfg = copy.deepcopy(cfg)
+        grid = build_sweep_grid(quick=quick)
+        n_total = total_combinations(grid)
+
+        param_names = list(grid.keys())
+        param_values = [grid[k] for k in param_names]
+
+        grid_label = 'quick (coarse)' if quick else 'full'
+        print(f"  Grid: {grid_label}, {n_total} combinations, "
+              f"{trials} trials each")
+        print()
+
+        all_rows = []
+        t_start = time.time()
+        completed = 0
+        skipped = 0
+
+        for combo in itertools.product(*param_values):
+            params = dict(zip(param_names, combo))
+            completed += 1
+
+            elapsed = time.time() - t_start
+            if completed > 1:
+                avg = elapsed / (completed - 1)
+                eta = avg * (n_total - completed + 1)
+            else:
+                eta = float('inf')
+
+            label = (f"FOV={params['fov_deg']:.1f} "
+                     f"FPS={params['frame_rate_hz']:.0f} "
+                     f"R={params['cell_radius_nm']:.1f}")
+            print(f"  [{completed}/{n_total}] {label} "
+                  f"(elapsed {format_eta(elapsed)}, "
+                  f"ETA {format_eta(eta)})", end="", flush=True)
+
+            result = evaluate_point(base_cfg, params, trials)
+
+            row = {
+                "fov_deg":            params["fov_deg"],
+                "frame_rate_hz":      params["frame_rate_hz"],
+                "cell_radius_nm":     params["cell_radius_nm"],
+                "slant_range_nm":     params["slant_range_nm"],
+                "altitude_ft":        params["altitude_ft"],
+                "detection_rate_pct": round(result["detection_rate"] * 100, 2),
+                "mean_ttfd_s":        round(result["mean_ttfd"], 3)
+                                      if result["mean_ttfd"] != float('inf')
+                                      else float("inf"),
+                "scan_cycle_time_s":  round(result["scan_cycle_time"], 4)
+                                      if result["scan_cycle_time"] != float('inf')
+                                      else float("inf"),
+                "skipped":            result["skipped"],
+                "skip_reason":        result.get("skip_reason", ""),
+            }
+            all_rows.append(row)
+
+            if result["skipped"]:
+                skipped += 1
+                print(f"  => SKIP ({result['skip_reason']})")
+            else:
+                det = f"{row['detection_rate_pct']:.1f}%"
+                ttfd = (f"{row['mean_ttfd_s']:.1f}s"
+                        if row['mean_ttfd_s'] != float('inf') else "N/A")
+                print(f"  => Det={det}, TTFD={ttfd}")
+
+        # Write CSV
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, "isr_optimization.csv")
+        write_csv(all_rows, csv_path)
+        print(f"\n  CSV saved: {os.path.abspath(csv_path)}")
+
+        # Print summary
+        print_summary(all_rows, top_n=top_n)
+
+        # Heatmap
+        heatmap_path = os.path.join(output_dir,
+                                    "isr_optimization_heatmap.pdf")
+        print("  Generating heatmap...", end=" ", flush=True)
+        if generate_heatmap(all_rows, heatmap_path):
+            print(f"saved: {os.path.abspath(heatmap_path)}")
+        else:
+            print("skipped (matplotlib not available or no valid data)")
+
+        total_time = time.time() - t_start
+        print(f"\n  Total time: {format_eta(total_time)} "
+              f"({completed} combos, {skipped} skipped)")
+
+    except Exception as exc:
+        print(f"\n  ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    print()
+    _pause()
+
+
+# ── comprehensive report generator ──────────────────────────────────
+
+def _generate_report(cfg):
+    """Launch the comprehensive report generator from the menu."""
+    _clear()
+    print("=" * 55)
+    print("  Comprehensive Report Generator")
+    print("=" * 55)
+    print()
+    print("  Generates a multi-page PDF report including:")
+    print("    - Simulation methodology (manual)")
+    print("    - Sensor model descriptions")
+    print("    - Detection & target model details")
+    print("    - Geometry explanations")
+    print("    - Configuration summary")
+    print("    - ISR optimisation results + CSV")
+    print("    - Sensitivity analysis charts + CSV")
+    print()
+
+    run_opt = _read_bool("Include ISR optimisation sweep?", True)
+
+    opt_quick = True
+    opt_trials = 50
+    if run_opt:
+        print()
+        print("  Optimisation grid:")
+        print("    Quick  — ~96 combinations  (faster)")
+        print("    Full   — ~6,480 combinations (slower)")
+        raw = input("  Grid mode (1=Quick, 2=Full) [1]: ").strip()
+        if raw == '2':
+            opt_quick = False
+        opt_trials = _read_int("MC trials per optimisation point", 50,
+                               lo=5, hi=10000)
+
+    print()
+    sens_trials = _read_int("MC trials per sensitivity point", 50,
+                            lo=5, hi=10000)
+
+    output_dir = cfg['output'].get('output_dir', './results')
+    print()
+    raw = input(f"  Output directory [{output_dir}]: ").strip()
+    if raw:
+        output_dir = raw
+
+    print()
+    print("  Starting report generation...")
+    print("  (this will take a while — progress is shown below)")
+    print()
+
+    try:
+        from report_generator import generate_comprehensive_report
+
+        files = generate_comprehensive_report(
+            cfg,
+            output_dir=output_dir,
+            run_optimization=run_opt,
+            optimization_quick=opt_quick,
+            optimization_trials=opt_trials,
+            sensitivity_trials=sens_trials,
+        )
+
+        print()
+        print("  " + "=" * 50)
+        print("  Report generation complete!")
+        print("  " + "=" * 50)
+        print(f"  PDF report:      {os.path.abspath(files['pdf'])}")
+        if 'optimization_csv' in files:
+            print(f"  Optimisation CSV: "
+                  f"{os.path.abspath(files['optimization_csv'])}")
+        print(f"  Sensitivity CSV:  "
+              f"{os.path.abspath(files['sensitivity_csv'])}")
+
+    except Exception as exc:
+        print(f"\n  ERROR: {exc}")
+        import traceback
+        traceback.print_exc()
+
+    print()
+    _pause()
+
+
 # ── main menu ────────────────────────────────────────────────────────
 
 def interactive_menu(cfg):
@@ -492,6 +714,11 @@ def interactive_menu(cfg):
         print("  11. Load config from file")
         print("  12. Save config to file")
         print()
+        print("  Analysis & Reports")
+        print("  ─────────────────────────────────────────")
+        print("  13. Run ISR Optimisation (parameter sweep)")
+        print("  14. Generate Comprehensive Report")
+        print()
         print("  R.  Run simulation")
         print("  Q.  Quit")
         print()
@@ -522,6 +749,10 @@ def interactive_menu(cfg):
             cfg = _load_config_from_file(cfg)
         elif choice == '12':
             _save_config(cfg)
+        elif choice == '13':
+            _run_optimization(cfg)
+        elif choice == '14':
+            _generate_report(cfg)
         elif choice == 'r':
             if not selected_modes:
                 print("  No sensor modes selected. Pick at least one (option 9).")
