@@ -43,8 +43,8 @@ class SensorBase:
         self.fp_height = 0.0  # nm
         self.fp_rotation = 0.0  # rad
 
-        # Track continuous dwell time on target
-        self.dwell_on_target = 0.0
+        # Track continuous dwell time on target (per target_id for multi-target)
+        self._dwell_on_target = {}  # target_id -> float
 
         # Track cumulative area swept (nm^2) for efficiency metrics
         self._area_swept = 0.0
@@ -52,7 +52,7 @@ class SensorBase:
 
     def reset(self):
         """Reset sensor state for a new MC trial."""
-        self.dwell_on_target = 0.0
+        self._dwell_on_target = {}
         self._area_swept = 0.0
 
     def step(self, t: float, dt: float):
@@ -180,12 +180,16 @@ class ISRLineScan(SensorBase):
         self.fp_height = self.fp_size_nm
         self.fp_rotation = 0.0
 
-    def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
+    def check_detection(self, car_x: float, car_y: float, dt: float,
+                        target_id: int = 0) -> bool:
         """
         Per-frame detection: if the target is inside the FOV during this
         simulation step, roll a single Pd check.  Because the sensor hops
         to a new position every 1/30 s, the target is only "seen" in the
         frames where the raster happens to cover its location.
+
+        target_id: accepted for API consistency with dwell-based sensors
+        but not used (ISR detection is stateless per frame).
         """
         if self._target_in_footprint(car_x, car_y):
             if self.rng.uniform() < self.pd_in_fov:
@@ -306,15 +310,20 @@ class NTISRStepStare(SensorBase):
             self.fp_width = 0.0
             self.fp_height = 0.0
 
-    def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
+    def check_detection(self, car_x: float, car_y: float, dt: float,
+                        target_id: int = 0) -> bool:
         """
         Step-and-stare detection: target must be in FOV, and after minimum
         dwell the detection probability accumulates.
+
+        target_id: unique identifier for each target so dwell is tracked
+        independently in multi-target scenarios.
         """
         in_fp = self._target_in_footprint(car_x, car_y)
         if in_fp:
-            self.dwell_on_target += dt
-            if self.dwell_on_target >= self.min_dwell_s:
+            self._dwell_on_target[target_id] = (
+                self._dwell_on_target.get(target_id, 0.0) + dt)
+            if self._dwell_on_target[target_id] >= self.min_dwell_s:
                 # Pd is calibrated so that cumulative Pd over one full
                 # dwell_time_s equals pd_in_fov
                 effective_dwell = self.dwell_time_s - self.min_dwell_s
@@ -325,7 +334,7 @@ class NTISRStepStare(SensorBase):
                 if self.rng.uniform() < p_step:
                     return True
         else:
-            self.dwell_on_target = 0.0
+            self._dwell_on_target[target_id] = 0.0
         return False
 
 
@@ -560,21 +569,26 @@ class NTISRFMV(SensorBase):
         if len(self.visit_history) > max_history:
             self.visit_history = self.visit_history[-max_history:]
 
-    def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
+    def check_detection(self, car_x: float, car_y: float, dt: float,
+                        target_id: int = 0) -> bool:
         """
         FMV detection: operator needs target in FOV for recognition time,
         then Pd accumulates. Recognition time is short (operator watching
         video continuously), so Pd builds quickly once target enters FOV.
+
+        target_id: unique identifier for each target so dwell is tracked
+        independently in multi-target scenarios.
         """
         in_fp = self._target_in_footprint(car_x, car_y)
         if in_fp:
-            self.dwell_on_target += dt
-            if self.dwell_on_target >= self.min_dwell_s:
+            self._dwell_on_target[target_id] = (
+                self._dwell_on_target.get(target_id, 0.0) + dt)
+            if self._dwell_on_target[target_id] >= self.min_dwell_s:
                 # Calibrate so that 2s of dwell gives cumulative Pd = pd_in_fov
                 recognition_window = 2.0
                 p_step = 1.0 - (1.0 - self.pd_in_fov) ** (dt / recognition_window)
                 if self.rng.uniform() < p_step:
                     return True
         else:
-            self.dwell_on_target = 0.0
+            self._dwell_on_target[target_id] = 0.0
         return False

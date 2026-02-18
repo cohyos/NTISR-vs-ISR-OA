@@ -84,7 +84,7 @@ def _trial_worker(args):
 
         for ci, car in enumerate(cars):
             cx, cy = car.get_position()
-            if sensor.check_detection(cx, cy, dt):
+            if sensor.check_detection(cx, cy, dt, target_id=ci):
                 total_detections += 1
                 if not per_target_detected[ci]:
                     per_target_detected[ci] = True
