@@ -404,6 +404,10 @@ class NTISRFMV(SensorBase):
 
     def step(self, t: float, dt: float):
         """Advance FMV operator scan — biased random walk."""
+        boundary_limit = self.cell_radius - self.fp_size_nm / 2
+        if boundary_limit < 0.1 * self.cell_radius:
+            boundary_limit = 0.1 * self.cell_radius
+
         self.time_to_heading_change -= dt
         if self.time_to_heading_change <= 0:
             rand_heading = self.rng.uniform(0, 2 * np.pi)
@@ -416,19 +420,53 @@ class NTISRFMV(SensorBase):
             blend_y = ((1.0 - self.road_bias) * rand_dir[1]
                        + self.road_bias * road_dir[1])
 
+            # When in the outer zone, blend in a centripetal (toward-
+            # centre) component so the operator naturally drifts inward
+            # instead of riding along the boundary following a road.
+            cur_dist = np.sqrt((self.fp_x - self.cx)**2
+                               + (self.fp_y - self.cy)**2)
+            if cur_dist > boundary_limit * 0.75:
+                inward_strength = min(
+                    1.0,
+                    (cur_dist - boundary_limit * 0.75)
+                    / (boundary_limit * 0.25))
+                to_cx = self.cx - self.fp_x
+                to_cy = self.cy - self.fp_y
+                tc_norm = np.sqrt(to_cx**2 + to_cy**2)
+                if tc_norm > 1e-9:
+                    to_cx /= tc_norm
+                    to_cy /= tc_norm
+                w = inward_strength * 0.5
+                blend_x = (1.0 - w) * blend_x + w * to_cx
+                blend_y = (1.0 - w) * blend_y + w * to_cy
+
             self.scan_heading = np.arctan2(blend_y, blend_x)
             self.time_to_heading_change = self.rng.exponential(4.0)
 
-        new_x = self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
-        new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
+        # Apply continuous inward drift when in the outer zone — models
+        # an operator's tendency to keep the FOV away from the cell edge
+        # where there is less area to search.
+        cur_dist = np.sqrt((self.fp_x - self.cx)**2
+                           + (self.fp_y - self.cy)**2)
+        inward_dx, inward_dy = 0.0, 0.0
+        if cur_dist > boundary_limit * 0.70 and cur_dist > 1e-9:
+            inward_frac = min(
+                1.0,
+                (cur_dist - boundary_limit * 0.70)
+                / (boundary_limit * 0.30))
+            inward_speed = inward_frac * self.scan_speed_nm_s * 0.4
+            inward_dx = -(self.fp_x - self.cx) / cur_dist * inward_speed * dt
+            inward_dy = -(self.fp_y - self.cy) / cur_dist * inward_speed * dt
 
-        boundary_limit = self.cell_radius - self.fp_size_nm / 2
-        if boundary_limit < 0.1 * self.cell_radius:
-            boundary_limit = 0.1 * self.cell_radius
+        new_x = (self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
+                 + inward_dx)
+        new_y = (self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
+                 + inward_dy)
 
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
         if dist > boundary_limit:
-            # Specular reflection (same physics as the car model)
+            # Specular reflection with random perturbation so the
+            # operator doesn't ping-pong along the same diameter
             nx = (new_x - self.cx) / dist
             ny = (new_y - self.cy) / dist
 
@@ -438,6 +476,7 @@ class NTISRFMV(SensorBase):
             vx_ref = vx - 2 * dot * nx
             vy_ref = vy - 2 * dot * ny
             self.scan_heading = np.arctan2(vy_ref, vx_ref)
+            self.scan_heading += self.rng.uniform(-0.6, 0.6)
 
             # Bounce the overshoot inward from the contact point
             overshoot = dist - boundary_limit
@@ -453,9 +492,11 @@ class NTISRFMV(SensorBase):
                 new_x = self.cx + (new_x - self.cx) * scale
                 new_y = self.cy + (new_y - self.cy) * scale
 
-            # Prevent the next heading-change from immediately overriding
-            # the reflected heading and sending us back to the edge
-            self.time_to_heading_change = max(self.time_to_heading_change, 1.5)
+            # Force a heading change soon so the operator doesn't
+            # continue on a stale heading after the bounce
+            self.time_to_heading_change = min(
+                self.time_to_heading_change,
+                self.rng.uniform(0.5, 1.5))
 
         self.fp_x = new_x
         self.fp_y = new_y
