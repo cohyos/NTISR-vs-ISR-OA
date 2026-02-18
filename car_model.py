@@ -4,7 +4,7 @@ Car (target) movement model inside a circular cell.
 Implements a random-walk with reflective boundary:
 - Car starts at a random position inside the cell.
 - Car moves at a constant speed with periodic random heading changes.
-- When the car hits the cell boundary it reflects inward.
+- When the car hits the cell boundary it bounces back inward.
 """
 
 import numpy as np
@@ -50,34 +50,38 @@ class Car:
         new_x = self.x + dx
         new_y = self.y + dy
 
-        # Reflective boundary
+        # Reflective boundary: on hitting the cell edge, pick a random
+        # inward heading within a ±45° cone of the inward normal.
+        # This avoids the tangential sliding that specular reflection
+        # causes on grazing hits against a circular boundary.
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
         if dist > self.radius:
             # Unit outward normal at the exit point
             nx = (new_x - self.cx) / dist
             ny = (new_y - self.cy) / dist
 
-            # Reflect velocity across the boundary normal
-            vx = self.speed_nm_s * np.cos(self.heading)
-            vy = self.speed_nm_s * np.sin(self.heading)
-            dot = vx * nx + vy * ny
-            vx_ref = vx - 2 * dot * nx
-            vy_ref = vy - 2 * dot * ny
-            self.heading = np.arctan2(vy_ref, vx_ref)
+            # Random heading within ±30° of the inward normal
+            inward_angle = np.arctan2(-ny, -nx)
+            jitter = self.rng.uniform(-np.pi / 6, np.pi / 6)
+            self.heading = inward_angle + jitter
 
-            # Bounce the overshoot distance back inward from the boundary
+            # Place car at boundary contact point and step inward
             overshoot = dist - self.radius
             contact_x = self.cx + nx * self.radius
             contact_y = self.cy + ny * self.radius
             new_x = contact_x + np.cos(self.heading) * overshoot
             new_y = contact_y + np.sin(self.heading) * overshoot
 
-            # Safety clamp: if still outside (near-tangent hit), pull inside
+            # Safety clamp: if still outside, pull inside
             dist2 = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
             if dist2 >= self.radius:
-                scale = (self.radius * 0.99) / max(dist2, 1e-12)
+                scale = (self.radius * 0.90) / max(dist2, 1e-12)
                 new_x = self.cx + (new_x - self.cx) * scale
                 new_y = self.cy + (new_y - self.cy) * scale
+
+            # Reset heading change timer so the car keeps this inward
+            # heading long enough to move well away from the edge.
+            self.time_to_change = self.rng.exponential(self.heading_interval)
 
         self.x = new_x
         self.y = new_y
