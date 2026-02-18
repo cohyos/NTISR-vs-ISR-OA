@@ -466,8 +466,11 @@ def _run_optimization(cfg):
     print("  to find the combination that maximises detection.")
     print()
     print("  Grid options:")
-    print("    Quick  — ~96 combinations  (a few minutes)")
-    print("    Full   — ~6,480 combinations (may take hours)")
+    print("    Quick  — ~36 combinations  (a few minutes)")
+    print("    Full   — ~1,080 combinations (may take a while)")
+    print()
+
+    print(f"  ISR FOV is fixed at {cfg['isr']['fov_deg']} deg (from config)")
     print()
 
     quick = True
@@ -509,6 +512,7 @@ def _run_optimization(cfg):
         grid_label = 'quick (coarse)' if quick else 'full'
         print(f"  Grid: {grid_label}, {n_total} combinations, "
               f"{trials} trials each")
+        print(f"  ISR FOV: {cfg['isr']['fov_deg']} deg (fixed)")
         print()
 
         all_rows = []
@@ -527,9 +531,9 @@ def _run_optimization(cfg):
             else:
                 eta = float('inf')
 
-            label = (f"FOV={params['fov_deg']:.1f} "
-                     f"FPS={params['frame_rate_hz']:.0f} "
-                     f"R={params['cell_radius_nm']:.1f}")
+            label = (f"FPS={params['frame_rate_hz']:.0f} "
+                     f"R={params['cell_radius_nm']:.1f} "
+                     f"SR={params['slant_range_nm']:.0f}")
             print(f"  [{completed}/{n_total}] {label} "
                   f"(elapsed {format_eta(elapsed)}, "
                   f"ETA {format_eta(eta)})", end="", flush=True)
@@ -537,7 +541,6 @@ def _run_optimization(cfg):
             result = evaluate_point(base_cfg, params, trials)
 
             row = {
-                "fov_deg":            params["fov_deg"],
                 "frame_rate_hz":      params["frame_rate_hz"],
                 "cell_radius_nm":     params["cell_radius_nm"],
                 "slant_range_nm":     params["slant_range_nm"],
@@ -620,8 +623,8 @@ def _generate_report(cfg):
     if run_opt:
         print()
         print("  Optimisation grid:")
-        print("    Quick  — ~96 combinations  (faster)")
-        print("    Full   — ~6,480 combinations (slower)")
+        print("    Quick  — ~36 combinations  (faster)")
+        print("    Full   — ~1,080 combinations (slower)")
         raw = input("  Grid mode (1=Quick, 2=Full) [1]: ").strip()
         if raw == '2':
             opt_quick = False

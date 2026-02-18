@@ -69,20 +69,21 @@ def build_sweep_grid(quick: bool = False) -> dict:
     """
     Return a dict of parameter-name -> list-of-values for the sweep.
 
+    The ISR FOV is fixed by the sensor hardware and is NOT swept.
+    It is taken from the base configuration (default: 1.0 deg).
+
     When *quick* is True the grid is coarsened so a test run completes in
     a few minutes rather than hours.
     """
     if quick:
         return {
-            "fov_deg":          [0.5, 1.0, 2.5, 5.0],
             "frame_rate_hz":    [10, 30, 80],
-            "cell_radius_nm":   [0.5, 1.5],
-            "slant_range_nm":   [5.0, 12.0],
+            "cell_radius_nm":   [0.5, 1.0, 1.5],
+            "slant_range_nm":   [5.0, 10.0],
             "altitude_ft":      [20000, 35000],
         }
     else:
         return {
-            "fov_deg":          [0.2, 0.5, 1.0, 2.0, 3.0, 5.0],
             "frame_rate_hz":    [5, 10, 20, 30, 50, 100],
             "cell_radius_nm":   [0.3, 0.5, 1.0, 1.5, 2.0, 3.0],
             "slant_range_nm":   [5.0, 8.0, 10.0, 14.0, 20.0],
@@ -137,18 +138,21 @@ def evaluate_point(base_cfg: dict, params: dict, n_trials: int) -> dict:
     Run a reduced MC simulation for one parameter combination and return
     a results dict with detection_rate, mean_ttfd, and scan_cycle_time.
 
-    *params* keys: fov_deg, frame_rate_hz, cell_radius_nm,
+    *params* keys: frame_rate_hz, cell_radius_nm,
                    slant_range_nm, altitude_ft.
+
+    The ISR FOV is taken from the base configuration (not swept).
     """
     cfg = _deep_copy_cfg(base_cfg)
 
-    # Apply sweep parameters
-    cfg["isr"]["fov_deg"]             = params["fov_deg"]
+    # Apply sweep parameters (FOV stays at config default)
     cfg["isr"]["frame_rate_hz"]       = params["frame_rate_hz"]
     cfg["cell"]["radius_nm"]          = params["cell_radius_nm"]
     cfg["geometry"]["slant_range_nm"] = params["slant_range_nm"]
     cfg["platform"]["altitude_ft"]    = params["altitude_ft"]
     cfg["simulation"]["mc_trials"]    = n_trials
+
+    fov_deg = cfg["isr"]["fov_deg"]  # fixed from config
 
     # Validate geometry: slant range must exceed altitude
     alt_nm = params["altitude_ft"] * FT_TO_NM
@@ -164,7 +168,7 @@ def evaluate_point(base_cfg: dict, params: dict, n_trials: int) -> dict:
     # Scan cycle time (cheap)
     sct = compute_scan_cycle_time(
         params["altitude_ft"], params["slant_range_nm"],
-        params["cell_radius_nm"], params["fov_deg"],
+        params["cell_radius_nm"], fov_deg,
         params["frame_rate_hz"],
     )
 
@@ -193,7 +197,6 @@ def evaluate_point(base_cfg: dict, params: dict, n_trials: int) -> dict:
 # ===================================================================
 
 CSV_COLUMNS = [
-    "fov_deg",
     "frame_rate_hz",
     "cell_radius_nm",
     "slant_range_nm",
@@ -235,15 +238,15 @@ def print_summary(rows: list[dict], top_n: int = 10) -> None:
 
     top = valid[:top_n]
 
-    hdr = (f"  {'Rank':>4s}  {'FOV':>6s}  {'FPS':>5s}  {'Rcell':>6s}  "
+    hdr = (f"  {'Rank':>4s}  {'FPS':>5s}  {'Rcell':>6s}  "
            f"{'SR':>6s}  {'Alt':>7s}  {'Det%':>7s}  {'TTFD':>8s}  {'Cycle':>8s}")
-    units = (f"  {'':>4s}  {'[deg]':>6s}  {'[Hz]':>5s}  {'[nm]':>6s}  "
+    units = (f"  {'':>4s}  {'[Hz]':>5s}  {'[nm]':>6s}  "
              f"{'[nm]':>6s}  {'[ft]':>7s}  {'':>7s}  {'[s]':>8s}  {'[s]':>8s}")
     sep = "  " + "-" * (len(hdr) - 2)
 
     print()
     print("=" * len(hdr))
-    print(f"  TOP-{top_n} ISR PARAMETER SETS  (ranked by detection rate, then TTFD)")
+    print(f"  TOP-{top_n} ISR PARAMETER SETS  (FOV fixed, ranked by detection rate then TTFD)")
     print("=" * len(hdr))
     print(hdr)
     print(units)
@@ -252,7 +255,7 @@ def print_summary(rows: list[dict], top_n: int = 10) -> None:
     for idx, r in enumerate(top, start=1):
         ttfd_str = f"{r['mean_ttfd_s']:.1f}" if np.isfinite(r["mean_ttfd_s"]) else "N/A"
         cycle_str = f"{r['scan_cycle_time_s']:.2f}" if np.isfinite(r["scan_cycle_time_s"]) else "N/A"
-        print(f"  {idx:>4d}  {r['fov_deg']:>6.2f}  {r['frame_rate_hz']:>5.0f}  "
+        print(f"  {idx:>4d}  {r['frame_rate_hz']:>5.0f}  "
               f"{r['cell_radius_nm']:>6.2f}  {r['slant_range_nm']:>6.1f}  "
               f"{r['altitude_ft']:>7.0f}  {r['detection_rate_pct']:>6.1f}%  "
               f"{ttfd_str:>8s}  {cycle_str:>8s}")
@@ -266,8 +269,7 @@ def print_summary(rows: list[dict], top_n: int = 10) -> None:
     print(f"  Detection rate range: {min(det_rates):.1f}% — {max(det_rates):.1f}%")
     if top:
         best = top[0]
-        print(f"\n  BEST:  FOV={best['fov_deg']:.2f} deg, "
-              f"FPS={best['frame_rate_hz']:.0f} Hz, "
+        print(f"\n  BEST:  FPS={best['frame_rate_hz']:.0f} Hz, "
               f"Rcell={best['cell_radius_nm']:.2f} nm, "
               f"SR={best['slant_range_nm']:.1f} nm, "
               f"Alt={best['altitude_ft']:.0f} ft  =>  "
@@ -283,8 +285,8 @@ def print_summary(rows: list[dict], top_n: int = 10) -> None:
 def generate_heatmap(rows: list[dict], output_path: str) -> bool:
     """
     Generate a multi-panel heatmap PDF showing detection rate as a function
-    of FOV and frame rate, with one panel per (cell_radius, slant_range)
-    combination at the best-performing altitude.
+    of frame rate and cell radius, with one panel per slant_range value
+    at the best-performing altitude.
 
     Returns True if the PDF was written, False if matplotlib is unavailable.
     """
@@ -301,46 +303,41 @@ def generate_heatmap(rows: list[dict], output_path: str) -> bool:
         return False
 
     # Determine unique parameter values
-    fovs = sorted(set(r["fov_deg"] for r in valid))
     fpss = sorted(set(r["frame_rate_hz"] for r in valid))
     radii = sorted(set(r["cell_radius_nm"] for r in valid))
     srs = sorted(set(r["slant_range_nm"] for r in valid))
-
-    # For each (radius, slant_range) pick the altitude that produced the
-    # highest average detection rate across the FOV x FPS grid.
     altitudes = sorted(set(r["altitude_ft"] for r in valid))
 
-    panels = []  # (radius, sr, altitude, 2-d array)
-    for radius in radii:
-        for sr in srs:
-            best_alt = None
-            best_mean_det = -1.0
-            for alt in altitudes:
-                subset = [r for r in valid
-                          if r["cell_radius_nm"] == radius
-                          and r["slant_range_nm"] == sr
-                          and r["altitude_ft"] == alt]
-                if not subset:
-                    continue
-                mean_det = np.mean([r["detection_rate_pct"] for r in subset])
-                if mean_det > best_mean_det:
-                    best_mean_det = mean_det
-                    best_alt = alt
-
-            if best_alt is None:
+    # For each slant_range pick the altitude that produced the highest
+    # average detection rate across the FPS x radius grid.
+    panels = []  # (sr, altitude, 2-d array)
+    for sr in srs:
+        best_alt = None
+        best_mean_det = -1.0
+        for alt in altitudes:
+            subset = [r for r in valid
+                      if r["slant_range_nm"] == sr
+                      and r["altitude_ft"] == alt]
+            if not subset:
                 continue
+            mean_det = np.mean([r["detection_rate_pct"] for r in subset])
+            if mean_det > best_mean_det:
+                best_mean_det = mean_det
+                best_alt = alt
 
-            grid = np.full((len(fpss), len(fovs)), np.nan)
-            for r in valid:
-                if (r["cell_radius_nm"] == radius
-                        and r["slant_range_nm"] == sr
-                        and r["altitude_ft"] == best_alt):
-                    fi = fovs.index(r["fov_deg"])
-                    ri = fpss.index(r["frame_rate_hz"])
-                    grid[ri, fi] = r["detection_rate_pct"]
+        if best_alt is None:
+            continue
 
-            if not np.all(np.isnan(grid)):
-                panels.append((radius, sr, best_alt, grid))
+        grid = np.full((len(fpss), len(radii)), np.nan)
+        for r in valid:
+            if (r["slant_range_nm"] == sr
+                    and r["altitude_ft"] == best_alt):
+                ri = radii.index(r["cell_radius_nm"])
+                fi = fpss.index(r["frame_rate_hz"])
+                grid[fi, ri] = r["detection_rate_pct"]
+
+        if not np.all(np.isnan(grid)):
+            panels.append((sr, best_alt, grid))
 
     if not panels:
         return False
@@ -356,24 +353,24 @@ def generate_heatmap(rows: list[dict], output_path: str) -> bool:
     vmax = max(r["detection_rate_pct"] for r in valid)
     norm = Normalize(vmin=max(vmin, 0), vmax=min(vmax, 100))
 
-    for idx, (radius, sr, alt, grid) in enumerate(panels):
+    for idx, (sr, alt, grid) in enumerate(panels):
         ax = axes[idx // ncols][idx % ncols]
         im = ax.imshow(grid, origin="lower", aspect="auto",
-                        extent=[fovs[0], fovs[-1], fpss[0], fpss[-1]],
+                        extent=[radii[0], radii[-1], fpss[0], fpss[-1]],
                         cmap="RdYlGn", norm=norm, interpolation="nearest")
-        ax.set_xlabel("FOV [deg]")
+        ax.set_xlabel("Cell Radius [nm]")
         ax.set_ylabel("Frame Rate [Hz]")
-        ax.set_title(f"R={radius} nm, SR={sr} nm\n(alt={alt:.0f} ft)",
+        ax.set_title(f"SR={sr} nm (alt={alt:.0f} ft)",
                       fontsize=9)
-        ax.set_xticks(fovs)
+        ax.set_xticks(radii)
         ax.set_yticks(fpss)
 
     # Hide unused axes
     for idx in range(n_panels, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    fig.suptitle("ISR Detection Rate [%]  (FOV vs Frame Rate)", fontsize=12,
-                 fontweight="bold")
+    fig.suptitle("ISR Detection Rate [%]  (Frame Rate vs Cell Radius, FOV fixed)",
+                 fontsize=12, fontweight="bold")
     cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, pad=0.04)
     cbar.set_label("Detection Rate [%]")
 
@@ -466,6 +463,7 @@ def main() -> None:
     print("  ISR Scan Parameter Optimizer")
     print("=" * 70)
     print(f"  Base config : {os.path.abspath(config_path)}")
+    print(f"  ISR FOV     : {base_cfg['isr']['fov_deg']} deg (fixed)")
     print(f"  MC trials   : {args.trials} per combination")
     print(f"  Grid mode   : {'quick (coarse)' if args.quick else 'full'}")
     print(f"  Combinations: {n_total}")
@@ -498,7 +496,7 @@ def main() -> None:
         else:
             eta = np.inf
 
-        label = (f"FOV={params['fov_deg']:.1f}  FPS={params['frame_rate_hz']:.0f}  "
+        label = (f"FPS={params['frame_rate_hz']:.0f}  "
                  f"R={params['cell_radius_nm']:.1f}  SR={params['slant_range_nm']:.0f}  "
                  f"Alt={params['altitude_ft']:.0f}")
         print(f"[{completed}/{n_total}]  {label}  "
@@ -508,7 +506,6 @@ def main() -> None:
         result = evaluate_point(base_cfg, params, args.trials)
 
         row = {
-            "fov_deg":            params["fov_deg"],
             "frame_rate_hz":      params["frame_rate_hz"],
             "cell_radius_nm":     params["cell_radius_nm"],
             "slant_range_nm":     params["slant_range_nm"],

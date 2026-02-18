@@ -325,24 +325,21 @@ def _plot_sensitivity(pdf, param_label, unit, values, det_rates,
 
 def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
     """
-    Run the ISR parameter sweep and return (rows, csv_path).
+    Run the ISR parameter sweep and return a list of result dicts.
 
-    Returns a list of result dicts suitable for CSV export and
-    summary display.
+    The ISR FOV is fixed from the config and is NOT swept.
     """
     import itertools
 
     if quick:
         grid = {
-            "fov_deg":        [0.5, 1.0, 2.5, 5.0],
             "frame_rate_hz":  [10, 30, 80],
-            "cell_radius_nm": [0.5, 1.5],
-            "slant_range_nm": [5.0, 12.0],
+            "cell_radius_nm": [0.5, 1.0, 1.5],
+            "slant_range_nm": [5.0, 10.0],
             "altitude_ft":    [20000, 35000],
         }
     else:
         grid = {
-            "fov_deg":        [0.2, 0.5, 1.0, 2.0, 3.0, 5.0],
             "frame_rate_hz":  [5, 10, 20, 30, 50, 100],
             "cell_radius_nm": [0.3, 0.5, 1.0, 1.5, 2.0, 3.0],
             "slant_range_nm": [5.0, 8.0, 10.0, 14.0, 20.0],
@@ -364,22 +361,22 @@ def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
 
         if progress_fn:
             progress_fn(completed, n_total,
-                        f"FOV={params['fov_deg']:.1f} "
                         f"FPS={params['frame_rate_hz']:.0f} "
                         f"R={params['cell_radius_nm']:.1f}")
 
         test_cfg = copy.deepcopy(cfg)
-        test_cfg["isr"]["fov_deg"] = params["fov_deg"]
+        # FOV stays at config default
         test_cfg["isr"]["frame_rate_hz"] = params["frame_rate_hz"]
         test_cfg["cell"]["radius_nm"] = params["cell_radius_nm"]
         test_cfg["geometry"]["slant_range_nm"] = params["slant_range_nm"]
         test_cfg["platform"]["altitude_ft"] = params["altitude_ft"]
         test_cfg["simulation"]["mc_trials"] = trials
 
+        fov_deg = test_cfg["isr"]["fov_deg"]
+
         alt_nm = params["altitude_ft"] * FT_TO_NM
         if params["slant_range_nm"] <= alt_nm:
             rows.append({
-                "fov_deg": params["fov_deg"],
                 "frame_rate_hz": params["frame_rate_hz"],
                 "cell_radius_nm": params["cell_radius_nm"],
                 "slant_range_nm": params["slant_range_nm"],
@@ -398,7 +395,7 @@ def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
             sensor = ISRLineScan(
                 params["altitude_ft"], params["slant_range_nm"],
                 0.0, 0.0, params["cell_radius_nm"], 0.0, rng,
-                params["fov_deg"], params["frame_rate_hz"])
+                fov_deg, params["frame_rate_hz"])
             sct = sensor.scan_cycle_time
         except Exception:
             sct = float("inf")
@@ -406,7 +403,6 @@ def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
         try:
             mc = run_mc(test_cfg, "isr")
             rows.append({
-                "fov_deg": params["fov_deg"],
                 "frame_rate_hz": params["frame_rate_hz"],
                 "cell_radius_nm": params["cell_radius_nm"],
                 "slant_range_nm": params["slant_range_nm"],
@@ -419,7 +415,6 @@ def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
             })
         except Exception as exc:
             rows.append({
-                "fov_deg": params["fov_deg"],
                 "frame_rate_hz": params["frame_rate_hz"],
                 "cell_radius_nm": params["cell_radius_nm"],
                 "slant_range_nm": params["slant_range_nm"],
@@ -437,7 +432,7 @@ def _run_optimisation(cfg, quick=True, trials=50, progress_fn=None):
 def _write_optimisation_csv(rows, path):
     """Write optimisation results to CSV."""
     columns = [
-        "fov_deg", "frame_rate_hz", "cell_radius_nm", "slant_range_nm",
+        "frame_rate_hz", "cell_radius_nm", "slant_range_nm",
         "altitude_ft", "detection_rate_pct", "mean_ttfd_s",
         "scan_cycle_time_s", "skipped", "skip_reason",
     ]
@@ -470,7 +465,7 @@ def _optimisation_summary_page(pdf, rows, top_n=15):
             transform=ax.transAxes, fontsize=14, ha="center",
             fontweight="bold", va="top")
 
-    col_labels = ["Rank", "FOV\n[deg]", "FPS\n[Hz]", "Cell R\n[nm]",
+    col_labels = ["Rank", "FPS\n[Hz]", "Cell R\n[nm]",
                   "SR\n[nm]", "Alt\n[ft]", "Det\n[%]", "TTFD\n[s]",
                   "Cycle\n[s]"]
 
@@ -480,7 +475,6 @@ def _optimisation_summary_page(pdf, rows, top_n=15):
         cycle = f"{r['scan_cycle_time_s']:.2f}" if np.isfinite(r["scan_cycle_time_s"]) else "N/A"
         table_data.append([
             str(i),
-            f"{r['fov_deg']:.2f}",
             f"{r['frame_rate_hz']:.0f}",
             f"{r['cell_radius_nm']:.2f}",
             f"{r['slant_range_nm']:.1f}",
@@ -517,49 +511,45 @@ def _optimisation_summary_page(pdf, rows, top_n=15):
 
 
 def _optimisation_heatmap_page(pdf, rows):
-    """Create heatmap page(s) showing detection rate vs FOV and frame rate."""
+    """Create heatmap page(s) showing detection rate vs frame rate and cell radius."""
     from matplotlib.colors import Normalize
 
     valid = [r for r in rows if not r.get("skipped", False)]
     if not valid:
         return
 
-    fovs = sorted(set(r["fov_deg"] for r in valid))
     fpss = sorted(set(r["frame_rate_hz"] for r in valid))
     radii = sorted(set(r["cell_radius_nm"] for r in valid))
     srs = sorted(set(r["slant_range_nm"] for r in valid))
     altitudes = sorted(set(r["altitude_ft"] for r in valid))
 
     panels = []
-    for radius in radii:
-        for sr in srs:
-            best_alt, best_mean = None, -1.0
-            for alt in altitudes:
-                subset = [r for r in valid
-                          if r["cell_radius_nm"] == radius
-                          and r["slant_range_nm"] == sr
-                          and r["altitude_ft"] == alt]
-                if not subset:
-                    continue
-                mean_det = np.mean([r["detection_rate_pct"] for r in subset])
-                if mean_det > best_mean:
-                    best_mean = mean_det
-                    best_alt = alt
-
-            if best_alt is None:
+    for sr in srs:
+        best_alt, best_mean = None, -1.0
+        for alt in altitudes:
+            subset = [r for r in valid
+                      if r["slant_range_nm"] == sr
+                      and r["altitude_ft"] == alt]
+            if not subset:
                 continue
+            mean_det = np.mean([r["detection_rate_pct"] for r in subset])
+            if mean_det > best_mean:
+                best_mean = mean_det
+                best_alt = alt
 
-            grid = np.full((len(fpss), len(fovs)), np.nan)
-            for r in valid:
-                if (r["cell_radius_nm"] == radius
-                        and r["slant_range_nm"] == sr
-                        and r["altitude_ft"] == best_alt):
-                    fi = fovs.index(r["fov_deg"])
-                    ri = fpss.index(r["frame_rate_hz"])
-                    grid[ri, fi] = r["detection_rate_pct"]
+        if best_alt is None:
+            continue
 
-            if not np.all(np.isnan(grid)):
-                panels.append((radius, sr, best_alt, grid))
+        grid = np.full((len(fpss), len(radii)), np.nan)
+        for r in valid:
+            if (r["slant_range_nm"] == sr
+                    and r["altitude_ft"] == best_alt):
+                ri = radii.index(r["cell_radius_nm"])
+                fi = fpss.index(r["frame_rate_hz"])
+                grid[fi, ri] = r["detection_rate_pct"]
+
+        if not np.all(np.isnan(grid)):
+            panels.append((sr, best_alt, grid))
 
     if not panels:
         return
@@ -575,22 +565,22 @@ def _optimisation_heatmap_page(pdf, rows):
     vmax = max(r["detection_rate_pct"] for r in valid)
     norm = Normalize(vmin=max(vmin, 0), vmax=min(vmax, 100))
 
-    for idx, (radius, sr, alt, grid) in enumerate(panels):
+    for idx, (sr, alt, grid) in enumerate(panels):
         ax = axes[idx // ncols][idx % ncols]
         im = ax.imshow(grid, origin="lower", aspect="auto",
-                       extent=[fovs[0], fovs[-1], fpss[0], fpss[-1]],
+                       extent=[radii[0], radii[-1], fpss[0], fpss[-1]],
                        cmap="RdYlGn", norm=norm, interpolation="nearest")
-        ax.set_xlabel("FOV [deg]")
+        ax.set_xlabel("Cell Radius [nm]")
         ax.set_ylabel("Frame Rate [Hz]")
-        ax.set_title(f"R={radius} nm, SR={sr} nm\n(alt={alt:.0f} ft)",
+        ax.set_title(f"SR={sr} nm (alt={alt:.0f} ft)",
                      fontsize=9)
-        ax.set_xticks(fovs)
+        ax.set_xticks(radii)
         ax.set_yticks(fpss)
 
     for idx in range(n_panels, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
 
-    fig.suptitle("ISR Detection Rate [%]  (FOV vs Frame Rate)",
+    fig.suptitle("ISR Detection Rate [%]  (Frame Rate vs Cell Radius, FOV fixed)",
                  fontsize=12, fontweight="bold")
     cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, pad=0.04)
     cbar.set_label("Detection Rate [%]")
@@ -889,9 +879,8 @@ def generate_comprehensive_report(cfg, output_dir="./results",
             if valid:
                 valid.sort(key=lambda r: -r["detection_rate_pct"])
                 best = valid[0]
-                summary_lines.append("Best ISR Configuration Found")
+                summary_lines.append("Best ISR Configuration Found (FOV fixed)")
                 summary_lines.append("-" * 50)
-                summary_lines.append(f"  FOV:        {best['fov_deg']:.2f} deg")
                 summary_lines.append(f"  Frame Rate: {best['frame_rate_hz']:.0f} Hz")
                 summary_lines.append(f"  Cell R:     {best['cell_radius_nm']:.2f} nm")
                 summary_lines.append(f"  Slant R:    {best['slant_range_nm']:.1f} nm")
