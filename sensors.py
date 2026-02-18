@@ -46,9 +46,14 @@ class SensorBase:
         # Track continuous dwell time on target
         self.dwell_on_target = 0.0
 
+        # Track cumulative area swept (nm^2) for efficiency metrics
+        self._area_swept = 0.0
+        self._cell_area = np.pi * cell_radius_nm ** 2
+
     def reset(self):
         """Reset sensor state for a new MC trial."""
         self.dwell_on_target = 0.0
+        self._area_swept = 0.0
 
     def step(self, t: float, dt: float):
         """Update sensor pointing for current time. Override in subclass."""
@@ -66,6 +71,13 @@ class SensorBase:
     def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
         """Check detection — override in subclass for mode-specific logic."""
         raise NotImplementedError
+
+    @property
+    def coverage_ratio(self) -> float:
+        """Total area swept divided by cell area."""
+        if self._cell_area > 0:
+            return self._area_swept / self._cell_area
+        return 0.0
 
     def get_footprint(self) -> dict:
         """Return current footprint for visualization."""
@@ -153,9 +165,13 @@ class ISRLineScan(SensorBase):
         self.time_in_frame += dt
 
         # Advance to next position(s) if frame period elapsed
+        prev_idx = self.current_idx
         while self.time_in_frame >= self.frame_period:
             self.time_in_frame -= self.frame_period
             self.current_idx = (self.current_idx + 1) % len(self.scan_positions)
+            # Each new raster position sweeps one footprint of area
+            # (with 20% overlap, effective new area is ~64% of fp^2)
+            self._area_swept += self.fp_size_nm ** 2 * 0.64
 
         pos = self.scan_positions[self.current_idx]
         self.fp_x = pos[0]
@@ -280,6 +296,9 @@ class NTISRStepStare(SensorBase):
             gr_nm = np.sqrt(max(self.slant_range_nm**2 - alt_nm**2, 0.01))
             angle_deg = np.degrees(np.arctan2(angular_dist, gr_nm))
             slew_time = angle_deg / self.slew_rate_deg_s if self.slew_rate_deg_s > 0 else 0
+
+            # Each new stare position sweeps one footprint of area
+            self._area_swept += self.fp_size_nm ** 2 * 0.64
 
             self.current_idx = next_idx
             self.slewing = True
@@ -524,6 +543,10 @@ class NTISRFMV(SensorBase):
             self.time_to_heading_change = min(
                 self.time_to_heading_change,
                 self.rng.uniform(0.3, 1.0))
+
+        # Track area swept: footprint width × distance moved
+        dist_moved = np.sqrt((new_x - self.fp_x)**2 + (new_y - self.fp_y)**2)
+        self._area_swept += self.fp_size_nm * dist_moved
 
         self.fp_x = new_x
         self.fp_y = new_y

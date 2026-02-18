@@ -132,6 +132,15 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
             ['Mean detection events'] + [
                 f"{np.mean(results[m].total_detections):.1f}"
                 for m in active_modes],
+            ['Coverage ratio (sweeps)'] + [
+                f"{results[m].coverage_ratio:.1f}x"
+                for m in active_modes],
+            ['Detection Timeliness (DTI)'] + [
+                f"{results[m].dti:.3f}"
+                for m in active_modes],
+            ['Search Efficiency (SEI)'] + [
+                f"{results[m].sei:.4f}"
+                for m in active_modes],
         ]
 
         table = ax.table(cellText=rows, colLabels=col_labels,
@@ -217,6 +226,63 @@ def generate_pdf_report(results: dict, cfg: dict, output_path: str):
             ax.set_ylabel('Trials')
             ax.grid(True, alpha=0.3)
         fig.suptitle('Distribution of Detection Events per Trial',
+                     fontsize=14, fontweight='bold')
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # --- Page 6: Search Efficiency Index ---
+        fig, axes = plt.subplots(1, 3, figsize=(11, 6))
+
+        # Panel 1: Detection Timeliness Index (DTI) — bar chart
+        ax = axes[0]
+        dti_vals = [results[m].dti for m in active_modes]
+        bars = ax.bar([all_mode_names[m] for m in active_modes], dti_vals,
+                      color=[all_colors[m] for m in active_modes], alpha=0.85)
+        for bar, val in zip(bars, dti_vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f'{val:.3f}', ha='center', va='bottom', fontsize=10,
+                    fontweight='bold')
+        ax.set_ylabel('DTI (0 = never, 1 = instant)', fontsize=10)
+        ax.set_title('Detection Timeliness\nIndex (DTI)', fontsize=12,
+                     fontweight='bold')
+        ax.set_ylim(0, max(dti_vals) * 1.25 if max(dti_vals) > 0 else 1.0)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.tick_params(axis='x', rotation=15, labelsize=8)
+
+        # Panel 2: Coverage Ratio — bar chart
+        ax = axes[1]
+        cov_vals = [results[m].coverage_ratio for m in active_modes]
+        bars = ax.bar([all_mode_names[m] for m in active_modes], cov_vals,
+                      color=[all_colors[m] for m in active_modes], alpha=0.85)
+        for bar, val in zip(bars, cov_vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
+                    f'{val:.1f}x', ha='center', va='bottom', fontsize=10,
+                    fontweight='bold')
+        ax.set_ylabel('Cell-equivalents scanned', fontsize=10)
+        ax.set_title('Coverage Ratio\n(area swept / cell area)', fontsize=12,
+                     fontweight='bold')
+        ax.set_ylim(0, max(cov_vals) * 1.25 if max(cov_vals) > 0 else 1.0)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.tick_params(axis='x', rotation=15, labelsize=8)
+
+        # Panel 3: Search Efficiency Index (SEI) — bar chart
+        ax = axes[2]
+        sei_vals = [results[m].sei for m in active_modes]
+        bars = ax.bar([all_mode_names[m] for m in active_modes], sei_vals,
+                      color=[all_colors[m] for m in active_modes], alpha=0.85)
+        for bar, val in zip(bars, sei_vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.001,
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=10,
+                    fontweight='bold')
+        ax.set_ylabel('SEI = DTI / Coverage', fontsize=10)
+        ax.set_title('Search Efficiency\nIndex (SEI)', fontsize=12,
+                     fontweight='bold')
+        ax.set_ylim(0, max(sei_vals) * 1.25 if max(sei_vals) > 0 else 1.0)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.tick_params(axis='x', rotation=15, labelsize=8)
+
+        fig.suptitle('Search Efficiency Analysis',
                      fontsize=14, fontweight='bold')
         fig.tight_layout()
         pdf.savefig(fig)

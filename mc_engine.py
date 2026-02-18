@@ -33,7 +33,12 @@ class MCResult:
         self.prob_detect_by_time = None  # CDF of first-detection time
         self.mean_cumulative_pd = None
 
-    def finalize(self):
+        # Efficiency metrics
+        self.dti = 0.0           # Detection Timeliness Index (AUC of CDF)
+        self.coverage_ratio = 0.0  # Total area swept / cell area
+        self.sei = 0.0           # Search Efficiency Index = DTI / coverage_ratio
+
+    def finalize(self, coverage_ratio: float = 0.0):
         """Compute aggregate statistics after all trials."""
         finite_ttfd = self.time_to_first_detect[
             np.isfinite(self.time_to_first_detect)]
@@ -50,6 +55,21 @@ class MCResult:
         # Fraction of trials that detected at all
         self.overall_detect_fraction = np.mean(
             np.isfinite(self.time_to_first_detect))
+
+        # Detection Timeliness Index: area under CDF, normalized to [0, 1]
+        duration = self.n_steps * self.dt
+        if duration > 0 and len(self.mean_cumulative_pd) > 1:
+            _trapz = getattr(np, 'trapezoid', getattr(np, 'trapz', None))
+            self.dti = _trapz(self.mean_cumulative_pd, dx=self.dt) / duration
+        else:
+            self.dti = 0.0
+
+        # Search Efficiency Index
+        self.coverage_ratio = coverage_ratio
+        if self.coverage_ratio > 0:
+            self.sei = self.dti / self.coverage_ratio
+        else:
+            self.sei = 0.0
 
 
 def run_single_trial(sensor, car, dt: float, n_steps: int,
@@ -146,6 +166,7 @@ def run_mc(cfg: dict, mode: str, progress_callback=None) -> MCResult:
     cell_radius = cfg['cell']['radius_nm']
 
     result = MCResult(mode, n_trials, n_steps, dt)
+    coverage_ratios = []
 
     for trial in range(n_trials):
         trial_seed = (seed + trial * 1000) if seed is not None else None
@@ -163,9 +184,11 @@ def run_mc(cfg: dict, mode: str, progress_callback=None) -> MCResult:
         sensor = build_sensor(mode, cfg, cell_cx, cell_cy, rng)
 
         run_single_trial(sensor, car, dt, n_steps, trial, result)
+        coverage_ratios.append(sensor.coverage_ratio)
 
         if progress_callback:
             progress_callback(trial + 1, n_trials)
 
-    result.finalize()
+    avg_coverage = np.mean(coverage_ratios) if coverage_ratios else 0.0
+    result.finalize(coverage_ratio=avg_coverage)
     return result
