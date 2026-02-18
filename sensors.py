@@ -423,20 +423,39 @@ class NTISRFMV(SensorBase):
         new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
 
         boundary_limit = self.cell_radius - self.fp_size_nm / 2
+        if boundary_limit < 0.1 * self.cell_radius:
+            boundary_limit = 0.1 * self.cell_radius
+
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
         if dist > boundary_limit:
-            # Redirect toward centre with small random jitter
-            to_center = np.arctan2(self.cy - new_y, self.cx - new_x)
-            self.scan_heading = to_center + self.rng.uniform(-0.3, 0.3)
-            new_x = self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
-            new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
+            # Specular reflection (same physics as the car model)
+            nx = (new_x - self.cx) / dist
+            ny = (new_y - self.cy) / dist
 
-            # If still outside the boundary limit, clamp inward
+            vx = np.cos(self.scan_heading)
+            vy = np.sin(self.scan_heading)
+            dot = vx * nx + vy * ny
+            vx_ref = vx - 2 * dot * nx
+            vy_ref = vy - 2 * dot * ny
+            self.scan_heading = np.arctan2(vy_ref, vx_ref)
+
+            # Bounce the overshoot inward from the contact point
+            overshoot = dist - boundary_limit
+            contact_x = self.cx + nx * boundary_limit
+            contact_y = self.cy + ny * boundary_limit
+            new_x = contact_x + np.cos(self.scan_heading) * overshoot
+            new_y = contact_y + np.sin(self.scan_heading) * overshoot
+
+            # Safety clamp if still outside (near-tangent hit)
             dist2 = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
-            if dist2 > boundary_limit:
-                scale = (boundary_limit * 0.95) / max(dist2, 1e-12)
+            if dist2 >= boundary_limit:
+                scale = (boundary_limit * 0.90) / max(dist2, 1e-12)
                 new_x = self.cx + (new_x - self.cx) * scale
                 new_y = self.cy + (new_y - self.cy) * scale
+
+            # Prevent the next heading-change from immediately overriding
+            # the reflected heading and sending us back to the edge
+            self.time_to_heading_change = max(self.time_to_heading_change, 1.5)
 
         self.fp_x = new_x
         self.fp_y = new_y
