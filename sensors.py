@@ -369,12 +369,22 @@ class NTISRFMV(SensorBase):
             self.roads.append((mid_x, mid_y, angle))
 
     def _nearest_road_attraction(self) -> tuple:
-        """Compute a heading bias toward the nearest road."""
+        """
+        Compute a heading bias toward/along the nearest road.
+
+        Roads are bidirectional — the along-road direction is chosen to
+        be the one closer to the operator's current heading so the
+        operator follows roads naturally rather than always being pulled
+        in a single fixed direction.
+        """
         if not self.roads:
             return (0.0, 0.0)
 
         best_dist = float('inf')
         best_along = (0.0, 0.0)
+        heading_vec = np.array([np.cos(self.scan_heading),
+                                np.sin(self.scan_heading)])
+
         for (rx, ry, ra) in self.roads:
             dx = self.fp_x - rx
             dy = self.fp_y - ry
@@ -383,7 +393,11 @@ class NTISRFMV(SensorBase):
             perp_dist = abs(dx * perp[0] + dy * perp[1])
             if perp_dist < best_dist:
                 best_dist = perp_dist
-                along = road_dir
+                # Pick the along-road direction closer to current heading
+                if np.dot(road_dir, heading_vec) < 0:
+                    along = -road_dir
+                else:
+                    along = road_dir
                 toward = -np.sign(dx * perp[0] + dy * perp[1]) * perp
                 best_along = (along[0] + 0.3 * toward[0],
                               along[1] + 0.3 * toward[1])
@@ -391,6 +405,35 @@ class NTISRFMV(SensorBase):
         norm = np.sqrt(best_along[0]**2 + best_along[1]**2)
         if norm > 0:
             return (best_along[0] / norm, best_along[1] / norm)
+        return (0.0, 0.0)
+
+    def _revisit_repulsion(self) -> tuple:
+        """
+        Compute a repulsion vector away from recently visited positions.
+
+        Encourages the operator to explore unvisited areas rather than
+        re-scanning the same patch.  Strength is controlled by
+        revisit_tendency (0 = strong avoidance, 1 = no avoidance).
+        """
+        if not self.visit_history or self.revisit_tendency >= 1.0:
+            return (0.0, 0.0)
+
+        # Sample recent positions (last ~5 seconds of history)
+        recent = self.visit_history[-50:]
+        repel_x, repel_y = 0.0, 0.0
+        for (vx, vy) in recent:
+            dx = self.fp_x - vx
+            dy = self.fp_y - vy
+            d2 = dx * dx + dy * dy
+            if d2 > 1e-8:
+                # Inverse-distance repulsion (capped to avoid singularity)
+                strength = 1.0 / max(d2, self.fp_size_nm ** 2)
+                repel_x += dx * strength
+                repel_y += dy * strength
+
+        norm = np.sqrt(repel_x ** 2 + repel_y ** 2)
+        if norm > 0:
+            return (repel_x / norm, repel_y / norm)
         return (0.0, 0.0)
 
     def reset(self):
@@ -408,6 +451,7 @@ class NTISRFMV(SensorBase):
         if boundary_limit < 0.1 * self.cell_radius:
             boundary_limit = 0.1 * self.cell_radius
 
+        # ── Heading update ─────────────────────────────────────────
         self.time_to_heading_change -= dt
         if self.time_to_heading_change <= 0:
             rand_heading = self.rng.uniform(0, 2 * np.pi)
@@ -420,63 +464,46 @@ class NTISRFMV(SensorBase):
             blend_y = ((1.0 - self.road_bias) * rand_dir[1]
                        + self.road_bias * road_dir[1])
 
-            # When in the outer zone, blend in a centripetal (toward-
-            # centre) component so the operator naturally drifts inward
-            # instead of riding along the boundary following a road.
-            cur_dist = np.sqrt((self.fp_x - self.cx)**2
-                               + (self.fp_y - self.cy)**2)
-            if cur_dist > boundary_limit * 0.75:
-                inward_strength = min(
-                    1.0,
-                    (cur_dist - boundary_limit * 0.75)
-                    / (boundary_limit * 0.25))
-                to_cx = self.cx - self.fp_x
-                to_cy = self.cy - self.fp_y
-                tc_norm = np.sqrt(to_cx**2 + to_cy**2)
-                if tc_norm > 1e-9:
-                    to_cx /= tc_norm
-                    to_cy /= tc_norm
-                w = inward_strength * 0.5
-                blend_x = (1.0 - w) * blend_x + w * to_cx
-                blend_y = (1.0 - w) * blend_y + w * to_cy
+            # Revisit avoidance: blend in repulsion from recently
+            # visited areas so the operator explores new ground.
+            repel = self._revisit_repulsion()
+            avoid_w = (1.0 - self.revisit_tendency) * 0.3
+            blend_x = (1.0 - avoid_w) * blend_x + avoid_w * repel[0]
+            blend_y = (1.0 - avoid_w) * blend_y + avoid_w * repel[1]
 
             self.scan_heading = np.arctan2(blend_y, blend_x)
             self.time_to_heading_change = self.rng.exponential(4.0)
 
-        # Apply continuous inward drift when in the outer zone — models
-        # an operator's tendency to keep the FOV away from the cell edge
-        # where there is less area to search.
-        cur_dist = np.sqrt((self.fp_x - self.cx)**2
-                           + (self.fp_y - self.cy)**2)
-        inward_dx, inward_dy = 0.0, 0.0
-        if cur_dist > boundary_limit * 0.70 and cur_dist > 1e-9:
-            inward_frac = min(
-                1.0,
-                (cur_dist - boundary_limit * 0.70)
-                / (boundary_limit * 0.30))
-            inward_speed = inward_frac * self.scan_speed_nm_s * 0.4
-            inward_dx = -(self.fp_x - self.cx) / cur_dist * inward_speed * dt
-            inward_dy = -(self.fp_y - self.cy) / cur_dist * inward_speed * dt
+        # ── Move ───────────────────────────────────────────────────
+        new_x = self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
+        new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
 
-        new_x = (self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
-                 + inward_dx)
-        new_y = (self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
-                 + inward_dy)
-
+        # ── Boundary reflection ────────────────────────────────────
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
         if dist > boundary_limit:
-            # Specular reflection with random perturbation so the
-            # operator doesn't ping-pong along the same diameter
             nx = (new_x - self.cx) / dist
             ny = (new_y - self.cy) / dist
 
+            # Specular reflection
             vx = np.cos(self.scan_heading)
             vy = np.sin(self.scan_heading)
             dot = vx * nx + vy * ny
             vx_ref = vx - 2 * dot * nx
             vy_ref = vy - 2 * dot * ny
-            self.scan_heading = np.arctan2(vy_ref, vx_ref)
-            self.scan_heading += self.rng.uniform(-0.6, 0.6)
+
+            # For near-grazing hits (dot close to 0) the reflected
+            # heading is nearly tangent to the boundary, which causes
+            # the FMV to slide along the edge.  Blend toward the
+            # inward normal so the operator bounces back into the
+            # interior.  The blend weight is strongest for grazing
+            # hits and zero for head-on hits.
+            graze = 1.0 - min(abs(dot), 1.0)  # 1=grazing, 0=head-on
+            inward_x = -nx
+            inward_y = -ny
+            inward_w = graze * 0.7
+            vx_final = (1.0 - inward_w) * vx_ref + inward_w * inward_x
+            vy_final = (1.0 - inward_w) * vy_ref + inward_w * inward_y
+            self.scan_heading = np.arctan2(vy_final, vx_final)
 
             # Bounce the overshoot inward from the contact point
             overshoot = dist - boundary_limit
@@ -492,11 +519,11 @@ class NTISRFMV(SensorBase):
                 new_x = self.cx + (new_x - self.cx) * scale
                 new_y = self.cy + (new_y - self.cy) * scale
 
-            # Force a heading change soon so the operator doesn't
-            # continue on a stale heading after the bounce
+            # Force an early heading change so the operator picks a
+            # new search direction after bouncing off the edge
             self.time_to_heading_change = min(
                 self.time_to_heading_change,
-                self.rng.uniform(0.5, 1.5))
+                self.rng.uniform(0.3, 1.0))
 
         self.fp_x = new_x
         self.fp_y = new_y
@@ -505,6 +532,10 @@ class NTISRFMV(SensorBase):
         self.fp_rotation = 0.0
 
         self.visit_history.append((self.fp_x, self.fp_y))
+        # Cap history to last ~10 seconds to avoid unbounded growth
+        max_history = int(10.0 / max(dt, 0.01))
+        if len(self.visit_history) > max_history:
+            self.visit_history = self.visit_history[-max_history:]
 
     def check_detection(self, car_x: float, car_y: float, dt: float) -> bool:
         """
