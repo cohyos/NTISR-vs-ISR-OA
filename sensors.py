@@ -422,12 +422,21 @@ class NTISRFMV(SensorBase):
         new_x = self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
         new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
 
+        boundary_limit = self.cell_radius - self.fp_size_nm / 2
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
-        if dist > self.cell_radius - self.fp_size_nm / 2:
+        if dist > boundary_limit:
+            # Redirect toward centre with small random jitter
             to_center = np.arctan2(self.cy - new_y, self.cx - new_x)
-            self.scan_heading = to_center + self.rng.uniform(-0.5, 0.5)
+            self.scan_heading = to_center + self.rng.uniform(-0.3, 0.3)
             new_x = self.fp_x + self.scan_speed_nm_s * np.cos(self.scan_heading) * dt
             new_y = self.fp_y + self.scan_speed_nm_s * np.sin(self.scan_heading) * dt
+
+            # If still outside the boundary limit, clamp inward
+            dist2 = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
+            if dist2 > boundary_limit:
+                scale = (boundary_limit * 0.95) / max(dist2, 1e-12)
+                new_x = self.cx + (new_x - self.cx) * scale
+                new_y = self.cy + (new_y - self.cy) * scale
 
         self.fp_x = new_x
         self.fp_y = new_y

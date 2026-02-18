@@ -53,9 +53,11 @@ class Car:
         # Reflective boundary
         dist = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
         if dist > self.radius:
-            # Reflect: reverse the component of velocity toward the boundary
-            nx = (new_x - self.cx) / dist  # Normal pointing outward
+            # Unit outward normal at the exit point
+            nx = (new_x - self.cx) / dist
             ny = (new_y - self.cy) / dist
+
+            # Reflect velocity across the boundary normal
             vx = self.speed_nm_s * np.cos(self.heading)
             vy = self.speed_nm_s * np.sin(self.heading)
             dot = vx * nx + vy * ny
@@ -63,9 +65,19 @@ class Car:
             vy_ref = vy - 2 * dot * ny
             self.heading = np.arctan2(vy_ref, vx_ref)
 
-            # Place car just inside boundary
-            new_x = self.cx + nx * (self.radius - 0.001)
-            new_y = self.cy + ny * (self.radius - 0.001)
+            # Bounce the overshoot distance back inward from the boundary
+            overshoot = dist - self.radius
+            contact_x = self.cx + nx * self.radius
+            contact_y = self.cy + ny * self.radius
+            new_x = contact_x + np.cos(self.heading) * overshoot
+            new_y = contact_y + np.sin(self.heading) * overshoot
+
+            # Safety clamp: if still outside (near-tangent hit), pull inside
+            dist2 = np.sqrt((new_x - self.cx)**2 + (new_y - self.cy)**2)
+            if dist2 >= self.radius:
+                scale = (self.radius * 0.99) / max(dist2, 1e-12)
+                new_x = self.cx + (new_x - self.cx) * scale
+                new_y = self.cy + (new_y - self.cy) * scale
 
         self.x = new_x
         self.y = new_y
